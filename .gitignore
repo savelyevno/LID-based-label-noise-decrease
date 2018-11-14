@@ -4,3 +4,4 @@ LID_matrices/*
 *.tar.gz*
 .idea/*
 __pycache__/*
+weight_matrices/*
