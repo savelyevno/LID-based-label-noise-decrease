@@ -5,3 +5,10 @@ LID_matrices/*
 .idea/*
 __pycache__/*
 weight_matrices/*
+distances_to_first/*
+distances_to_mean/*
+feature_matrices_old/*
+lid_features/*
+logits/*
+pre_lid_features/*
+figs/*

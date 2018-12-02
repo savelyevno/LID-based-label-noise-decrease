@@ -6,25 +6,80 @@ from consts import *
 from Timer import timer
 from preprocessing import read_dataset
 from batch_iterate import batch_iterator, batch_iterator_with_indices
-from build_model import build_deepnn
-from lid import get_LID_calc_op, get_LID_per_element_calc_op
 from tools import bitmask_contains
 
 
+def get_LID_calc_op(g_x):
+    batch_size = tf.shape(g_x)[0]
+
+    norm_squared = tf.reshape(tf.reduce_sum(g_x * g_x, 1), [-1, 1])
+    norm_squared_t = tf.transpose(norm_squared)
+
+    dot_products = tf.matmul(g_x, tf.transpose(g_x))
+
+    distances_squared = tf.maximum(norm_squared - 2 * dot_products + norm_squared_t, 0)
+    distances = tf.sqrt(distances_squared) + tf.ones((batch_size, batch_size)) * EPS
+
+    k_nearest_raw, _ = tf.nn.top_k(-distances, k=LID_K + 1, sorted=True)
+    k_nearest = -k_nearest_raw[:, 1:]
+
+    distance_ratios = tf.transpose(tf.multiply(tf.transpose(k_nearest), 1 / k_nearest[:, -1]))
+    LIDs = - LID_K / tf.reduce_sum(tf.log(distance_ratios + EPS), 1)
+
+    return LIDs
+
+
+def get_LID_per_element_calc_op(g_x, X):
+    def get_norm_squared(arg):
+        return tf.reduce_sum(arg*arg, axis=2)
+
+    sample_batch_size = LID_BATCH_SIZE
+
+    batch_size = tf.shape(g_x)[0]
+
+    random_batch_indices = tf.random_uniform((batch_size, sample_batch_size), maxval=tf.shape(X)[0], dtype=tf.int32)
+
+    random_batch = tf.gather(X, random_batch_indices)
+
+    tiled_g_x = tf.tile(tf.expand_dims(g_x, 1), [1, sample_batch_size, 1])
+
+    g_x_norm_squared = tf.expand_dims(get_norm_squared(tiled_g_x), 2)
+    rnd_norm_squared = tf.expand_dims(get_norm_squared(random_batch), 1)
+
+    dot_products = tf.matmul(tiled_g_x, tf.transpose(random_batch, [0, 2, 1]))
+
+    distances_squared = tf.maximum(g_x_norm_squared - 2 * dot_products + rnd_norm_squared, 0)
+    distances = tf.sqrt(distances_squared) + tf.ones((batch_size, sample_batch_size, sample_batch_size)) * EPS
+
+    k_nearest_raw, _ = tf.nn.top_k(-distances, k=LID_K, sorted=True)
+    k_nearest = -k_nearest_raw
+
+    distance_ratios = tf.multiply(k_nearest, tf.expand_dims(1 / k_nearest[:, :, -1], 2))
+    LIDs_for_btach = - LID_K / tf.reduce_sum(tf.log(distance_ratios + EPS), 2)
+    LIDs = tf.reduce_mean(LIDs_for_btach, 1)
+
+    return LIDs
+
+
+
+
 class Model:
-    def __init__(self, model_name, lid_update_mode, lid_log_mask):
+    def __init__(self, model_name, update_mode, log_mask):
         """
 
         :param model_name:      name of the model
-        :param lid_update_mode: 0: vanilla
+        :param update_mode:     0: vanilla
                                 1: as in the paper
                                 2: per element
-        :param lid_log_mask:    in case it contains
-                                    last bit: logs LID data from the paper
-                                    second bit: logs LID data per element
+        :param log_mask:    in case it contains
+                                    0th bit: logs LID data from the paper
+                                    1st bit: logs LID data per element
+                                    2nd bit: logs lid features per element
+                                    3rd bit: logs pre lid features per element (before relu)
+                                    4th bit: logs logits per element
         """
-        self.lid_update_mode = lid_update_mode
-        self.lid_log_mask = lid_log_mask
+        self.update_mode = update_mode
+        self.log_mask = log_mask
         self.model_name = model_name
 
     @staticmethod
@@ -80,7 +135,7 @@ class Model:
             return normed
 
         # Reshape to use within a convolutional neural net.
-        # Last dimension is for "features" - there is only one here, since images are
+        # Last dimension is for "lid_features" - there is only one here, since images are
         # grayscale -- it would be 3 for an RGB image, 4 for RGBA, etc.
         with tf.name_scope('reshape'):
             x_image = tf.reshape(x, [-1, 28, 28, 1])
@@ -112,34 +167,32 @@ class Model:
             h_pool2 = max_pool_2x2(h_conv2)
 
         # Fully connected layer 1 -- after 2 round of downsampling, our 28x28 image
-        # is down to 7x7x64 feature maps -- maps this to 128 features.
+        # is down to 7x7x64 feature maps -- maps this to 128 lid_features.
         with tf.name_scope('fc1'):
             W_fc1 = weight_variable([7 * 7 * 64, FC_WIDTH])
             b_fc1 = bias_variable([FC_WIDTH])
 
             h_pool2_flat = tf.reshape(h_pool2, [-1, 7 * 7 * 64])
             a_fc1 = tf.matmul(h_pool2_flat, W_fc1) + b_fc1
-            b_norm_fc1 = batch_norm(a_fc1, is_training)
-            h_fc1 = tf.nn.relu(b_norm_fc1)
+            b_norm_fc1 = tf.identity(batch_norm(a_fc1, is_training), name='pre_lid_input')
+            h_fc1 = tf.nn.relu(b_norm_fc1, name='lid_input')
             # h_fc1 = tf.nn.relu(a_fc1)
 
         # Dropout - controls the complexity of the model, prevents co-adaptation of
-        # features.
+        # lid_features.
         with tf.name_scope('dropout'):
             keep_prob = tf.placeholder(tf.float32, name='keep_prob')
-            h_fc1_drop = tf.nn.dropout(h_fc1, keep_prob)
+            # h_fc1_drop = tf.nn.dropout(h_fc1, keep_prob)
 
-        # Map the 1024 features to 10 classes, one for each digit
+        # Map the 1024 lid_features to 10 classes, one for each digit
         with tf.name_scope('fc2'):
             W_fc2 = weight_variable([FC_WIDTH, 10])
             b_fc2 = bias_variable([10])
 
-            y_conv = tf.identity(tf.matmul(h_fc1, W_fc2) + b_fc2, name='probs')
+            y_conv = tf.identity(tf.matmul(h_fc1, W_fc2) + b_fc2, name='logits')
             # y_conv = tf.identity(tf.matmul(h_fc1_drop, W_fc2) + b_fc2, name='probs')
 
-        # print(keep_prob.name)
-
-        return h_fc1, y_conv, keep_prob
+        return b_norm_fc1, h_fc1, y_conv, keep_prob
 
     def _build(self):
         # Create the model
@@ -151,61 +204,51 @@ class Model:
         self.is_training = tf.placeholder(dtype=tf.bool, name='is_training')
 
         # Build the graph for the deep net
-        self.lid_input_layer, self.y_conv, self.keep_prob = self._build_nn(self.nn_input, self.is_training)
+        self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.keep_prob = self._build_nn(self.nn_input, self.is_training)
 
         #
         # CREATE LOSS & OPTIMIZER
         #
 
         with tf.name_scope('loss'):
-            if self.lid_update_mode == 0:
+            if self.update_mode == 0:
                 cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.y_,
-                                                                           logits=self.y_conv)
-            if self.lid_update_mode == 1 or bitmask_contains(self.lid_log_mask, 0):
+                                                                           logits=self.logits)
+            if self.update_mode == 1 or bitmask_contains(self.log_mask, 0):
                 self.alpha_var = tf.Variable(1, False, dtype=tf.float32, name='alpha')
 
-                if self.lid_update_mode == 1:
+                if self.update_mode == 1:
                     modified_labels = tf.identity(
-                        self.alpha_var * self.y_ + (1 - self.alpha_var.value()) * tf.one_hot(tf.argmax(self.y_conv, 1), 10),
+                        self.alpha_var * self.y_ + (1 - self.alpha_var.value()) * tf.one_hot(tf.argmax(self.logits, 1), 10),
                         name='modified_labels')
                     cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=modified_labels,
-                                                                               logits=self.y_conv)
-            if self.lid_update_mode == 2:
+                                                                               logits=self.logits)
+            if self.update_mode == 2:
                 self.element_weights_pl = tf.placeholder(dtype=np.float32,
                                                          shape=[None, 1],
                                                          name='element_weights')
                 modified_labels = tf.identity(
                     self.element_weights_pl * self.y_ +
-                    (1 - self.element_weights_pl) * tf.one_hot(tf.argmax(self.y_conv, 1), 10),
+                    (1 - self.element_weights_pl) * tf.one_hot(tf.argmax(self.logits, 1), 10),
                     name='modified_labels_per_element')
                 cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=modified_labels,
-                                                                           logits=self.y_conv)
+                                                                           logits=self.logits)
 
         self.cross_entropy = tf.reduce_mean(cross_entropy)
 
         with tf.name_scope('accuracy'):
-            correct_prediction = tf.equal(tf.argmax(self.y_conv, 1), tf.argmax(self.y_, 1))
+            correct_prediction = tf.equal(tf.argmax(self.logits, 1), tf.argmax(self.y_, 1))
             correct_prediction = tf.cast(correct_prediction, tf.float32)
         self.accuracy = tf.reduce_mean(correct_prediction, name='accuracy')
 
-        if self.lid_update_mode == 1 or bitmask_contains(self.lid_log_mask, 0):
+        if self.update_mode == 1 or bitmask_contains(self.log_mask, 0):
             #
             # PREPARE LID CALCULATION OP
             #
 
             self.lid_per_epoch = np.array([])
-            self.lid_calc_op = get_LID_calc_op(self.lid_input_layer)
+            self.lid_calc_op = get_LID_calc_op(self.lid_layer_op)
 
-        if self.lid_update_mode == 2 or bitmask_contains(self.lid_log_mask, 1):
-            #
-            # PREPARE LID PER DATASET ELEMENT CALCULATION
-            #
-
-            self.lid_sample_set_pl = tf.placeholder(dtype=tf.float32, shape=[LID_SAMPLE_SET_SIZE, self.lid_input_layer.shape[1]],
-                                                    name='LID_sample_set')
-            self.lid_per_element_calc_op = get_LID_per_element_calc_op(self.lid_input_layer, self.lid_sample_set_pl)
-
-            self.element_weights_matrix = np.empty((DATASET_SIZE, 0), dtype=np.float32)
 
     def train(self, train_dataset_name='train'):
         def calc_lid(X, Y, lid_calc_op, x, keep_prob, is_training):
@@ -271,12 +314,6 @@ class Model:
         # Import data
         X, Y = read_dataset(train_dataset_name)
 
-        if self.lid_update_mode == 2:
-            class_element_indices = [[] for c in range(N_CLASSES)]
-            for i in range(DATASET_SIZE):
-                class_element_indices[int(np.argmax(Y[i]))].append(i)
-            class_element_indices = [np.array(it) for it in class_element_indices]
-
         X_test, Y_test = read_dataset('test')
 
         self._build()
@@ -296,7 +333,7 @@ class Model:
         test_accuracy_summary = tf.summary.scalar(name='test_accuracy', tensor=test_accuracy_summary_scalar)
 
         summaries_to_merge = [test_accuracy_summary]
-        if bitmask_contains(self.lid_log_mask, 0):
+        if bitmask_contains(self.log_mask, 0):
             lid_summary_scalar = tf.placeholder(tf.float32)
             lid_summary = tf.summary.scalar(name='LID', tensor=lid_summary_scalar)
 
@@ -305,17 +342,17 @@ class Model:
 
             summaries_to_merge.extend([lid_summary, alpha_summary])
 
-        if bitmask_contains(self.lid_log_mask, 1):
-            lid_per_element_summary_pl = tf.placeholder(dtype=tf.float32, shape=[DATASET_SIZE, ])
-            lid_per_element_summary_hist = tf.summary.histogram(name='LID_per_element',
-                                                                values=lid_per_element_summary_pl)
-
-            summaries_to_merge.append(lid_per_element_summary_hist)
-
         per_epoch_summary = tf.summary.merge(summaries_to_merge)
 
         saver = tf.train.Saver()
         model_path = 'checkpoints/' + self.model_name + '/'
+
+        if bitmask_contains(self.log_mask, 2):
+            lid_features_per_epoch_per_element = np.empty((0, DATASET_SIZE, FC_WIDTH))
+        if bitmask_contains(self.log_mask, 3):
+            pre_lid_features_per_epoch_per_element = np.empty((0, DATASET_SIZE, FC_WIDTH))
+        if bitmask_contains(self.log_mask, 4):
+            logits_per_epoch_per_element = np.empty((0, DATASET_SIZE, N_CLASSES))
 
         #
         # SESSION START
@@ -328,7 +365,7 @@ class Model:
 
             sess.run(tf.global_variables_initializer())
 
-            if self.lid_update_mode == 1 or bitmask_contains(self.lid_log_mask, 0):
+            if self.update_mode == 1 or bitmask_contains(self.log_mask, 0):
                 #
                 # CALCULATE AND LOG INITIAL LID SCORE
                 #
@@ -338,37 +375,9 @@ class Model:
 
                 print('initial LID score:', initial_lid_score)
 
-                if bitmask_contains(self.lid_log_mask, 0):
+                if bitmask_contains(self.log_mask, 0):
                     lid_summary_str = sess.run(lid_summary, feed_dict={lid_summary_scalar: initial_lid_score})
                     summary_writer.add_summary(lid_summary_str, 0)
-                    summary_writer.flush()
-
-            if self.lid_update_mode == 2 or bitmask_contains(self.lid_log_mask, 1):
-                #
-                # CALCULATE INITIAL LID PER DATASET ELEMENT AND LOG IT
-                #
-
-                element_weights = np.ones((DATASET_SIZE,), dtype=np.float32)
-                lids_per_element = np.empty((DATASET_SIZE, 0), dtype=np.float32)
-
-                epoch_lids_per_element = calc_lid_per_element(X=X, Y=Y,
-                                                              lid_input_layer=self.lid_input_layer,
-                                                              x=self.nn_input,
-                                                              lid_per_element_calc_op=self.lid_per_element_calc_op,
-                                                              lid_sample_set_pl=self.lid_sample_set_pl,
-                                                              is_training=self.is_training)
-                lids_per_element = np.hstack((lids_per_element, epoch_lids_per_element))
-
-                print('LID mean: %g, std. dev.: %g, min: %g, max: %g' % (epoch_lids_per_element.mean(),
-                                                                         epoch_lids_per_element.var() ** 0.5,
-                                                                         epoch_lids_per_element.min(),
-                                                                         epoch_lids_per_element.max()))
-
-                if bitmask_contains(self.lid_log_mask, 1):
-                    lid_per_element_summary_hist_str = lid_per_element_summary_hist.eval(
-                        feed_dict={lid_per_element_summary_pl: lids_per_element[:, -1]}
-                    )
-                    summary_writer.add_summary(lid_per_element_summary_hist_str, 0)
                     summary_writer.flush()
 
             #
@@ -382,36 +391,18 @@ class Model:
                 print('___________________________________________________________________________')
                 print('\nSTARTING EPOCH %d\n' % (i_epoch,))
 
-                if self.lid_update_mode == 2:
-                    #
-                    # SET ELEMENT WEIGHTS
-                    #
-
-                    if turning_epoch != -1:
-                        print('\nmodifying weights...')
-                        for c in range(N_CLASSES):
-                            class_lids = np.take(lids_per_element[:, -1].reshape(-1), class_element_indices[c])
-
-                            # mean = np.mean(class_lids)
-                            # st_dev = np.var(class_lids) ** 0.5
-
-                            old_class_weights = element_weights[class_element_indices[c]]
-                            mean = np.average(class_lids, weights=old_class_weights)
-                            st_dev = (np.average((class_lids - mean)**2, weights=old_class_weights))**0.5
-
-                            class_element_weights = 1 - np.clip(np.abs(class_lids - mean) / (2 * st_dev), 0, 1)
-                            np.put(element_weights, class_element_indices[c], class_element_weights)
-
-                            print('\tclass: %d. mean: %g, st. dev.: %g; weighted mean: %g, weighted st. dev.: %g' %
-                                  (c, np.mean(class_lids), np.var(class_lids)**.5, mean, st_dev))
-
-                        self.element_weights_matrix = np.hstack((self.element_weights_matrix, element_weights.reshape((-1, 1))))
-
                 #
                 # TRAIN
                 #
 
                 print('\nstarting training...')
+
+                if bitmask_contains(self.log_mask, 2):
+                    lid_features_per_element = np.empty((DATASET_SIZE, FC_WIDTH))
+                if bitmask_contains(self.log_mask, 3):
+                    pre_lid_features_per_element = np.empty((DATASET_SIZE, FC_WIDTH))
+                if bitmask_contains(self.log_mask, 4):
+                    logits_per_element = np.empty((DATASET_SIZE, N_CLASSES))
 
                 i_batch = -1
                 for batch in batch_iterator_with_indices(X, Y, BATCH_SIZE):
@@ -419,9 +410,17 @@ class Model:
                     i_step += 1
 
                     feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.keep_prob: 0.5, self.is_training: True}
-                    if self.lid_update_mode == 2:
-                        feed_dict[self.element_weights_pl] = element_weights[batch[2]].reshape((-1, 1))
                     train_step.run(feed_dict=feed_dict)
+
+                    feed_dict[self.keep_prob] = 1.0
+                    feed_dict[self.is_training] = False
+
+                    if bitmask_contains(self.log_mask, 2):
+                        lid_features_per_element[batch[2], ] = self.lid_layer_op.run(feed_dict=feed_dict)
+                    if bitmask_contains(self.log_mask, 3):
+                        pre_lid_features_per_element[batch[2], ] = self.pre_lid_layer_op.run(feed_dict=feed_dict)
+                    if bitmask_contains(self.log_mask, 4):
+                        logits_per_element[batch[2], ] = self.logits(feed_dict=feed_dict)
 
                     if i_step % 100 == 0:
                         feed_dict[self.is_training] = False
@@ -432,7 +431,14 @@ class Model:
                         summary_writer.add_summary(summary_str, i_step)
                         summary_writer.flush()
 
-                if self.lid_update_mode == 1 or bitmask_contains(self.lid_log_mask, 0):
+                if bitmask_contains(self.log_mask, 2):
+                    lid_features_per_epoch_per_element = np.append(lid_features_per_epoch_per_element, lid_features_per_element)
+                if bitmask_contains(self.log_mask, 3):
+                    pre_lid_features_per_epoch_per_element = np.append(pre_lid_features_per_epoch_per_element, pre_lid_features_per_element)
+                if bitmask_contains(self.log_mask, 4):
+                    logits_per_epoch_per_element = np.append(logits_per_epoch_per_element, logits_per_element)
+
+                if self.update_mode == 1 or bitmask_contains(self.log_mask, 0):
                     #
                     # CALCULATE LID
                     #
@@ -442,38 +448,23 @@ class Model:
 
                     print('\nLID score after %dth epoch: %g' % (i_epoch, new_lid_score,))
 
-                if self.lid_update_mode == 2 or bitmask_contains(self.lid_log_mask, 1):
-                    #
-                    # CALCULATE LID PER DATASET ELEMENT
-                    #
-
-                    epoch_lids_per_element = calc_lid_per_element(X, Y, self.lid_input_layer, self.nn_input,
-                                                                  self.lid_per_element_calc_op,
-                                                                  self.lid_sample_set_pl, self.is_training)
-                    lids_per_element = np.hstack((lids_per_element, epoch_lids_per_element))
-
-                    print('LID mean: %g, std. dev.: %g, min: %g, max: %g' % (epoch_lids_per_element.mean(),
-                                                                             epoch_lids_per_element.var() ** 0.5,
-                                                                             epoch_lids_per_element.min(),
-                                                                             epoch_lids_per_element.max()))
-
                 #
                 # CHECK FOR STOPPING INIT PERIOD
                 #
 
-                if self.lid_update_mode == 1 or self.lid_update_mode == 2 or bitmask_contains(self.lid_log_mask, 0):
+                if self.update_mode == 1 or bitmask_contains(self.log_mask, 0):
                     if turning_epoch == -1 and i_epoch > EPOCH_WINDOW:
                         last_w_lids = lid_per_epoch[-EPOCH_WINDOW - 1: -1]
 
                         lid_check_value = new_lid_score - last_w_lids.mean() - 2 * last_w_lids.var() ** 0.5
 
-                        if self.lid_update_mode == 1 or self.lid_update_mode == 2:
+                        if self.update_mode == 1:
                             print('LID check:', lid_check_value)
 
                         if lid_check_value > 0:
                             turning_epoch = i_epoch - 1
 
-                            if self.lid_update_mode == 1 or self.lid_update_mode == 2:
+                            if self.update_mode == 1:
                                 saver.restore(sess, model_path + str(i_epoch - 1))
                                 print('Turning point passed, reverting to previous epoch and starting using modified loss')
 
@@ -483,12 +474,12 @@ class Model:
 
                     if turning_epoch != -1:
                         new_alpha_value = np.exp(-(i_epoch / N_EPOCHS) * (lid_per_epoch[-1] / lid_per_epoch[:-1].min()))
-                        if self.lid_update_mode == 1:
+                        if self.update_mode == 1:
                             print('\nnew alpha value:', new_alpha_value)
                     else:
                         new_alpha_value = 1
 
-                    if self.lid_update_mode == 1 or bitmask_contains(self.lid_log_mask, 0):
+                    if self.update_mode == 1 or bitmask_contains(self.log_mask, 0):
                         sess.run(self.alpha_var.assign(new_alpha_value))
 
                 #
@@ -501,8 +492,6 @@ class Model:
                     i_batch += 1
 
                     feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.keep_prob: 1.0, self.is_training: False}
-                    if self.lid_update_mode == 2:
-                        feed_dict[self.element_weights_pl] = element_weights[batch[2]].reshape((-1, 1))
                     partial_accuracy = self.accuracy.eval(feed_dict=feed_dict)
 
                     test_accuracy = (i_batch * test_accuracy + partial_accuracy) / (i_batch + 1)
@@ -514,12 +503,9 @@ class Model:
                 #
 
                 feed_dict = {test_accuracy_summary_scalar: test_accuracy}
-                if bitmask_contains(self.lid_log_mask, 0):
+                if bitmask_contains(self.log_mask, 0):
                     feed_dict[lid_summary_scalar] = lid_per_epoch[-1]
                     feed_dict[alpha_summary_scalar] = new_alpha_value
-
-                if bitmask_contains(self.lid_log_mask, 1):
-                    feed_dict[lid_per_element_summary_pl] = lids_per_element[:, -1]
 
                 summary_str = sess.run(per_epoch_summary, feed_dict=feed_dict)
                 summary_writer.add_summary(summary_str, i_step + 1)
@@ -532,8 +518,12 @@ class Model:
                 checkpoint_file = model_path + str(i_epoch)
                 saver.save(sess, checkpoint_file)
 
-                np.save('LID_matrices/' + self.model_name, lids_per_element)
-                np.save('weight_matrices/' + self.model_name, self.element_weights_matrix)
+                if bitmask_contains(self.log_mask, 2):
+                    np.save('lid_features/' + self.model_name, lid_features_per_epoch_per_element)
+                if bitmask_contains(self.log_mask, 3):
+                    np.save('pre_lid_features/' + self.model_name, pre_lid_features_per_epoch_per_element)
+                if bitmask_contains(self.log_mask, 4):
+                    np.save('logits/' + self.model_name, logits_per_epoch_per_element)
 
     @staticmethod
     def test(model_name, epoch):

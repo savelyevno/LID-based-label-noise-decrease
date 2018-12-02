@@ -6,5 +6,5 @@ if __name__ == '__main__':
     # full_test('model')
     # test_image('testSample/img_3.jpg')
 
-    model = Model('model25_2_clipped_2stdev_weighted_mean', lid_update_mode=2, lid_log_mask=3)
+    model = Model('model25_relu', update_mode=0, log_mask=1)
     model.train('train25')
