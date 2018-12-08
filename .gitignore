@@ -12,3 +12,4 @@ lid_features/*
 logits/*
 pre_lid_features/*
 figs/*
+class_feature_means/*

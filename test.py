@@ -1039,11 +1039,19 @@ def test_distances_based_weights():
 
         means = []
         S = []
+        sigma = np.zeros((d, d))
         for c0 in range(10):
             ind_c0_c0 = list(pred_indices[c0].intersection(indices[c0]))  # elements marked as c0 and predicted the same
             S.append(features[epoch, ind_c0_c0, :])
             mu_c0_c0 = np.mean(S[c0], 0)
             means.append(mu_c0_c0)
+
+            for it in S[c0]:
+                diff = it - mu_c0_c0
+                sigma += np.matmul(diff.reshape((-1, 1)), diff)
+        sigma /= sum([len(S[c]) for c in range(10)])
+        inv_sigma = np.linalg.inv(sigma)
+
         means = np.array(means)
 
         def softmax(x, w=None):
@@ -1092,6 +1100,12 @@ def test_distances_based_weights():
                 distances = np.ones(10) * distance_scale
                 distances[c0] = calc_cosine_distance_to_mean(x.reshape((1, -1)), means[c0])
                 distances[c1] = calc_cosine_distance_to_mean(x.reshape((1, -1)), means[c1])
+            elif mode == 6:
+                distances = np.ones(10) * distance_scale
+                d0 = x - means[c0]
+                distances[c0] = np.matmul(d0, np.matmul(inv_sigma, d0.reshape((-1, 1))))
+                d1 = x - means[c1]
+                distances[c1] = np.matmul(d1, np.matmul(inv_sigma, d1.reshape((-1, 1))))
 
             # distances_to_mean = distances_to_mean / np.max(distances_to_mean) * distance_scale
 
@@ -1107,13 +1121,17 @@ def test_distances_based_weights():
             one_hot_pred = np.zeros(10)
             one_hot_pred[c0] = 1
 
-            distances = get_distances(i, 3, d)
+            distances = get_distances(i, 6, d)
 
             # weights1 = softmax(-distances_to_mean, softmax(logits[epoch, i, :]))
 
             # w = softmax(- np.array([distances_to_mean[c0], distances_to_mean[c1]]) * 5)
             # new_labels1 = weights1 * w[1] + Y1[i] * w[0]
             new_labels2 = one_hot_pred*int(distances[c0] < distances[c1]) + Y1[i]*int(distances[c0] >= distances[c1])
+
+            # if distances[c0] > distances[c1]:
+            #     if c0 == np.argmax(Y[i]):
+            #         print(c0, c1, distances[c0], distances[c1], np.argmax(Y[i]))
 
             # err_sm[0] += err_f(new_labels1, Y[i])
             err_sm[0] += err_f(new_labels2, Y[i])
@@ -1214,8 +1232,8 @@ def test_mean_distances_change():
     X, Y = read_dataset('train')
     X1, Y1 = read_dataset('train25')
 
-    model_name = 'model25_relu'
-    features = np.load('lid_features/' + model_name + '.npy')
+    model_name = '25_cosine_pre_lid_5'
+    features = np.load('pre_lid_features/' + model_name + '.npy')
     # features = np.load('feature_matrices_old/model_none.npy')
     logits = np.load('logits/' + model_name + '.npy')
     n_epochs = features.shape[0]

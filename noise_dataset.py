@@ -27,6 +27,6 @@ def introduce_symmetric_noise(X, Y, noise_ratio, seed=None):
 
 
 if __name__ == '__main__':
-    X, Y = read_dataset('train')
+    X, Y = read_dataset('cifar-10', 'train')
     introduce_symmetric_noise(X, Y, 0.3)
-    write_dataset('train30', X, Y)
+    write_dataset('cifar-10', 'train30', X, Y)
