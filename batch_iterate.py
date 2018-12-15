@@ -27,7 +27,7 @@ def batch_iterator_with_indices(X, Y, batch_size, is_random=True):
         X_batch = X_shuffled[l:r]
         Y_batch = Y_shuffled[l:r]
 
-        yield X_batch, Y_batch, perm[l:r]
+        yield [X_batch, Y_batch, perm[l:r]]
 
         l = r
         end = r == N

@@ -618,7 +618,7 @@ def test_lid_em():
 
 
 def calc_lid(x, S, b=100, k=20):
-    B = S[np.random.choice(S.shape[0], b, False), :]
+    B = S[np.random.choice(S.shape[0], min(b, S.shape[0]), False), :]
 
     B_norm2 = np.sum(B * B, 1)
     x_norm2 = np.sum(x**2)
@@ -805,7 +805,7 @@ def calc_cosine_distance_to_mean(X, mu, scaled=True):
     dot_prod = np.matmul(mu, X.T)
 
     if scaled:
-        dists = 1 - dot_prod / (X_norm2 * mu_norm2) ** 0.5
+        dists = 1 - dot_prod / (X_norm2 * mu_norm2 + 1e-14) ** 0.5
     else:
         dists = (X_norm2 * mu_norm2) ** 0.5 - dot_prod
 
@@ -896,11 +896,14 @@ def test_distances():
 
 
 def test_distances_with_predictions():
-    X, Y = read_dataset('train')
-    X1, Y1 = read_dataset('train25')
+    dataset_name = 'cifar-10'
 
-    features = np.load('lid_features/model25.npy')
-    logits = np.load('logits/model25.npy')
+    X, Y = read_dataset(name=dataset_name, type='train')
+    X1, Y1 = read_dataset(name=dataset_name, type='train25')
+
+    model_name = '25_lam_1e-2_lr_1e-2_v2'
+    features = np.load('lid_features/' + dataset_name + '/' + model_name + '.npy')
+    logits = np.load('logits/' + dataset_name + '/' + model_name + '.npy')
     n_epochs = features.shape[0]
     N = features.shape[1]
     d = features.shape[2]
@@ -916,19 +919,12 @@ def test_distances_with_predictions():
         true_indices[y0[i]].add(i)
         true_false_indices[y0[i]][y1[i]].add(i)
 
-    def calc_dist_to_mean(X, mu):
-        X_norm2 = np.sum(X * X, 1)
-        mu_norm2 = np.sum(mu ** 2)
-        dot_prod = np.matmul(mu, X.T)
+    def internal_distance_to_mean(X, mu, S):
+        # return calc_dist_to_mean(X, mu)
+        return calc_cosine_distance_to_mean(X, mu)
 
-        dists2 = X_norm2 - 2 * dot_prod + mu_norm2
-        
-        dists = dists2 ** 0.5
-        
-        return dists
-
-    epochs = list(range(n_epochs))
-    # epochs = [7]
+    # epochs = list(range(n_epochs))
+    epochs = [10]
     for epoch in epochs:
         print('epoch', epoch)
 
@@ -936,18 +932,19 @@ def test_distances_with_predictions():
         for i in range(N):
             pred = int(np.argmax(logits[epoch, i, :]))
             pred_indices[pred].add(i)
+        pred_indices = true_indices
 
-        step = 0.2
-        bins = np.arange(0, 20, step)
+        step = 0.025
+        bins = np.arange(0, 1, step)
+        density = True
 
         for c0 in range(10):
             ind_c0_c0 = list(pred_indices[c0].intersection(indices[c0]))  # elements marked as c1 and predicted the same
             S_c0_c0 = features[epoch, ind_c0_c0, :]
             mu_c0_c0 = np.mean(S_c0_c0, 0)
-            
-            dists_c0_to_c0 = calc_dist_to_mean(S_c0_c0, mu_c0_c0)
 
-            hist_c0_to_c0, _ = np.histogram(dists_c0_to_c0, bins, density=False)
+            dists_c0_to_c0 = internal_distance_to_mean(S_c0_c0, mu_c0_c0, S_c0_c0)
+            hist_c0_to_c0, _ = np.histogram(dists_c0_to_c0, bins, density=density)
 
             for c1 in range(c0 + 1, 10):
                 ind_c1_c1 = list(pred_indices[c1].intersection(indices[c1]))  # elements marked as c1 and predicted the same
@@ -957,29 +954,25 @@ def test_distances_with_predictions():
                 ind_c1_c0 = list(pred_indices[c1].intersection(indices[c0]))  # elements marked as c0, but predicted as c1
                 S_c1_c0 = features[epoch, ind_c1_c0, :]
 
-                dists_c1_to_c1 = calc_dist_to_mean(S_c1_c1, mu_c1_c1)
-                dists_c10_to_c0 = calc_dist_to_mean(S_c1_c0, mu_c0_c0)
-                dists_c10_to_c1 = calc_dist_to_mean(S_c1_c0, mu_c1_c1)
-
-                hist_c1_to_c1, _ = np.histogram(dists_c1_to_c1, bins, density=False)
-                hist_c10_to_c0, _ = np.histogram(dists_c10_to_c0, bins, density=False)
-                hist_c10_to_c1, _ = np.histogram(dists_c10_to_c1, bins, density=False)
-
                 plt.title(str(c0) + ' ' + str(c1))
                 if bool(1):
-                    # plt.bar(bins[:-1] + step / 2, hist_c0_to_c0, align='center', width=step, alpha=0.8,
-                    #         label='{TL=%d,FL=%d} to {TL=%d,FL=%d}' % (c0, c0, c0, c0))
-                    # plt.bar(bins[:-1] + step / 2, hist_c10_to_c0, align='center', width=step, alpha=0.5,
-                    #         label='{TL=%d,FL=%d} to {TL=%d,FL=%d}' % (c1, c0, c0, c0))
+                    dists_c10_to_c0 = internal_distance_to_mean(S_c1_c0, mu_c0_c0, S_c0_c0)
 
-                    def cdf(x):
-                        return np.sum(hist_c0_to_c0[:int(round(x/step))]) / len(S_c0_c0)
+                    hist_c10_to_c0, _ = np.histogram(dists_c10_to_c0, bins, density=density)
 
-                    weights = []
-                    for it in dists_c10_to_c0:
-                        cdf_it = cdf(it)
-                        weight = min(2 * (1 - cdf_it), 2 * cdf_it)
-                        weights.append(weight)
+                    plt.bar(bins[:-1] + step / 2, hist_c0_to_c0, align='center', width=step, alpha=0.8,
+                            label='{TL=%d,FL=%d} to {TL=%d,FL=%d}' % (c0, c0, c0, c0))
+                    plt.bar(bins[:-1] + step / 2, hist_c10_to_c0, align='center', width=step, alpha=0.5,
+                            label='{TL=%d,FL=%d} to {TL=%d,FL=%d}' % (c1, c0, c0, c0))
+
+                    # def cdf(x):
+                    #     return np.sum(hist_c0_to_c0[:int(round(x/step))]) / len(S_c0_c0)
+                    #
+                    # weights = []
+                    # for it in dists_c10_to_c0:
+                    #     cdf_it = cdf(it)
+                    #     weight = min(2 * (1 - cdf_it), 2 * cdf_it)
+                    #     weights.append(weight)
 
                     # dists_c0_to_c0_1 = dists_c0_to_c0[np.random.choice(len(S_c0_c0), len(dists_c10_to_c0), False)]
                     # em_data = np.append(dists_c0_to_c0_1, dists_c10_to_c0).reshape((-1, 1))
@@ -989,11 +982,17 @@ def test_distances_with_predictions():
                     # confs = e_step(2, mus, sigmas, pi, dists_c10_to_c0.reshape((-1, 1)))
                     # weights = 1 - confs[:, 1]
 
-                    step_w = 0.01
-                    bins_w = np.arange(0, 1, step_w)
-                    hist_w, _ = np.histogram(weights, bins_w, density=True)
-                    plt.bar(bins_w[:-1] + step_w/2, hist_w, align='center', width=step_w)
+                    # step_w = 0.01
+                    # bins_w = np.arange(0, 1, step_w)
+                    # hist_w, _ = np.histogram(weights, bins_w, density=True)
+                    # plt.bar(bins_w[:-1] + step_w/2, hist_w, align='center', width=step_w)
                 else:
+                    dists_c1_to_c1 = internal_distance_to_mean(S_c1_c1, mu_c1_c1, S_c1_c1)
+                    dists_c10_to_c1 = internal_distance_to_mean(S_c1_c0, mu_c1_c1, S_c1_c1)
+
+                    hist_c1_to_c1, _ = np.histogram(dists_c1_to_c1, bins, density=density)
+                    hist_c10_to_c1, _ = np.histogram(dists_c10_to_c1, bins, density=density)
+
                     plt.bar(bins[:-1] + step / 2, hist_c1_to_c1, align='center', width=step, alpha=0.8,
                             label='{TL=%d,FL=%d} to {TL=%d,FL=%d}' % (c1, c1, c1, c1))
                     plt.bar(bins[:-1] + step / 2, hist_c10_to_c1, align='center', width=step, alpha=0.5,
@@ -1008,12 +1007,13 @@ def test_distances_with_predictions():
 
 
 def test_distances_based_weights():
-    X, Y = read_dataset('train')
-    X1, Y1 = read_dataset('train25')
+    dataset_name = 'cifar-10'
+    X, Y = read_dataset(name=dataset_name, type='train')
+    X1, Y1 = read_dataset(name=dataset_name, type='train25')
 
-    model_name = 'model25_relu'
-    features = np.load('lid_features/' + model_name + '.npy')
-    logits = np.load('logits/' + model_name + '.npy')
+    model_name = '25_lam_1e-2_lr_1e-2_v2'
+    features = np.load('lid_features/' + dataset_name + '/' + model_name + '.npy')
+    logits = np.load('logits/' + dataset_name + '/' + model_name + '.npy')
     n_epochs = features.shape[0]
     N = features.shape[1]
     d = features.shape[2]
@@ -1025,10 +1025,11 @@ def test_distances_based_weights():
     for i in range(N):
         indices[y1[i]].add(i)
 
-    err = [[]]
+    err = [[] for i in range(7)]
 
-    epochs = list(range(n_epochs))
-    # epochs = [7]
+    # epochs = list(range(n_epochs))
+    epochs = list(range(5, n_epochs))
+    # epochs = [15]
     for epoch in epochs:
         print('epoch', epoch)
 
@@ -1039,20 +1040,21 @@ def test_distances_based_weights():
 
         means = []
         S = []
-        sigma = np.zeros((d, d))
+        # sigma = np.zeros((d, d))
         for c0 in range(10):
             ind_c0_c0 = list(pred_indices[c0].intersection(indices[c0]))  # elements marked as c0 and predicted the same
             S.append(features[epoch, ind_c0_c0, :])
             mu_c0_c0 = np.mean(S[c0], 0)
             means.append(mu_c0_c0)
-
-            for it in S[c0]:
-                diff = it - mu_c0_c0
-                sigma += np.matmul(diff.reshape((-1, 1)), diff)
-        sigma /= sum([len(S[c]) for c in range(10)])
-        inv_sigma = np.linalg.inv(sigma)
-
+        #
+        #     for it in S[c0]:
+        #         diff = it - mu_c0_c0
+        #         sigma += np.matmul(diff.reshape((-1, 1)), diff)
+        # sigma /= sum([len(S[c]) for c in range(10)])
+        # inv_sigma = np.linalg.inv(sigma)
         means = np.array(means)
+        # for i in range(10):
+        #     print(means[i, :])
 
         def softmax(x, w=None):
             if w is None:
@@ -1060,19 +1062,14 @@ def test_distances_based_weights():
             sm = np.sum(np.exp(x) * w)
             return (np.exp(x) * w) / sm
 
-        lam = np.exp(-100)
-
-        def cross_entropy(x, y):
-            y_zeros = (y == 0).astype(np.float)
-            cnt = np.sum(y_zeros)
-            y_normed = y
-            y_normed += y_zeros * lam
-            y_normed -= (1 - y_zeros) * lam * cnt / (10 - cnt)
-            return -np.dot(x, np.log(y_normed))
-
         def err_f(x, y):
             # return cross_entropy(x, y)
             return 1 - np.dot(x, y)
+
+        def one_hot(c):
+            a = np.zeros(10)
+            a[c] = 1
+            return a
 
         def get_distances(i, mode=2, distance_scale=d ** 0.5):
             x = features[epoch, i, :]
@@ -1112,38 +1109,60 @@ def test_distances_based_weights():
             return distances
 
         cnt = 0
-        err_sm = [0]*1
-        for i in range(N):
-        # for i in np.random.choice(N, 5000, False):
-            c0 = int(np.argmax(logits[epoch, i, :]))
+        err_sm = [0]*len(err)
+        # for i in range(N):
+        for i in np.random.choice(N, 10000, False):
+            lgts = logits[epoch, i, :]
+            c0 = int(np.argmax(lgts))
             c1 = y1[i]
 
-            one_hot_pred = np.zeros(10)
-            one_hot_pred[c0] = 1
+            one_hot_c0 = one_hot(c0)
 
-            distances = get_distances(i, 6, d)
+            cmp_distances = get_distances(i, 4, d)
+            # soft_max_dist = get_distances(i, 0, d)
+            soft_max_dist = cmp_distances
+            # cmp_distances = soft_max_dist
 
-            # weights1 = softmax(-distances_to_mean, softmax(logits[epoch, i, :]))
+            w = int(cmp_distances[c0] < cmp_distances[c1])
+            new_labels1 = one_hot_c0 * w + Y1[i] * (1 - w)
 
-            # w = softmax(- np.array([distances_to_mean[c0], distances_to_mean[c1]]) * 5)
-            # new_labels1 = weights1 * w[1] + Y1[i] * w[0]
-            new_labels2 = one_hot_pred*int(distances[c0] < distances[c1]) + Y1[i]*int(distances[c0] >= distances[c1])
+            min_dist_c = np.argmin(cmp_distances)
+            one_hot_min_dist = one_hot(min_dist_c)
 
-            # if distances[c0] > distances[c1]:
-            #     if c0 == np.argmax(Y[i]):
-            #         print(c0, c1, distances[c0], distances[c1], np.argmax(Y[i]))
+            w = int(cmp_distances[min_dist_c] < cmp_distances[c1])
+            new_labels2 = one_hot_min_dist * w + Y1[i] * (1 - w)
 
-            # err_sm[0] += err_f(new_labels1, Y[i])
-            err_sm[0] += err_f(new_labels2, Y[i])
+            w = softmax(- np.array([soft_max_dist[min_dist_c], soft_max_dist[c1]]))
+            new_labels3 = one_hot_min_dist * w[0] + Y1[i] * w[1]
+
+            w = softmax(- np.array([soft_max_dist[c0], soft_max_dist[c1]]))
+            new_labels4 = one_hot_c0 * w[0] + Y1[i] * w[1]
+
+            # w = softmax(- np.array([soft_max_dist[c0], soft_max_dist[c1], soft_max_dist[min_dist_c]]))
+            # new_labels5 = one_hot_c0 * w[0] + Y1[i] * w[1] + one_hot_min_dist * w[2]
+            #
+            # w = softmax(np.array([lgts[c0], lgts[c1], lgts[min_dist_c]]))
+            # new_labels6 = one_hot_c0 * w[0] + Y1[i] * w[1] + one_hot_min_dist * w[2]
+
+            err_sm[1] += err_f(new_labels1, Y[i])
+            err_sm[2] += err_f(new_labels2, Y[i])
+            err_sm[3] += err_f(new_labels3, Y[i])
+            err_sm[4] += err_f(new_labels4, Y[i])
+            # err_sm[5] += err_f(new_labels5, Y[i])
+            # err_sm[6] += err_f(new_labels6, Y[i])
+
+            c_tr = np.argmax(Y[i])
+            err_sm[0] += 1 - int(min_dist_c == c_tr or c0 == c_tr or c1 == c_tr)
 
             cnt += 1
 
-        for i in range(1):
+        for i in range(len(err)):
             err[i].append(err_sm[i]/cnt)
 
-    for it in err:
-        plt.plot(it, '.-')
+    for i in range(len(err)):
+        plt.plot(err[i], '.-', label=str(i + 1))
 
+    plt.legend()
     plt.grid()
     plt.show()
 
@@ -1229,13 +1248,21 @@ def test_search_for_scale():
 
 
 def test_mean_distances_change():
-    X, Y = read_dataset('train')
-    X1, Y1 = read_dataset('train25')
+    dataset_name = 'cifar-10'
+    # dataset_name = 'mnist'
+    X, Y = read_dataset(name=dataset_name, type='train')
+    X1, Y1 = read_dataset(name=dataset_name, type='train25')
 
-    model_name = '25_cosine_pre_lid_5'
-    features = np.load('pre_lid_features/' + model_name + '.npy')
-    # features = np.load('feature_matrices_old/model_none.npy')
-    logits = np.load('logits/' + model_name + '.npy')
+    model_name = '25_lam_1e-2_lr_1e-2_v2'
+    # model_name = 'model25_relu'
+    features = np.load('lid_features/' + dataset_name + '/' + model_name + '.npy')
+    logits = np.load('logits/' + dataset_name + '/' + model_name + '.npy')
+
+    # np.save('lid_features/' + dataset_name + '/' + model_name + '_', features.reshape((-1, 50000, 256)))
+    # np.save('pre_lid_features/' + dataset_name + '/' + model_name + '_', features.reshape((-1, 50000, 256)))
+    # np.save('logits/' + dataset_name + '/' + model_name + '_', logits.reshape((-1, 50000, 10)))
+    # exit(0)
+
     n_epochs = features.shape[0]
     N = features.shape[1]
     d = features.shape[2]
@@ -1268,30 +1295,36 @@ def test_mean_distances_change():
     #
     #     for i in range(N):
     #         # dist = calc_cosine_distance_to_mean(means, features[epoch, i, :])
-    #         dist = calc_dist_to_mean(means, features[epoch, i, :])
-    #         # dist = np.array([calc_lid(features[epoch, i, :], S[c]) for c in range(10)])
+    #         # dist = calc_dist_to_mean(means, features[epoch, i, :])
+    #         dist = np.array([calc_lid(features[epoch, i, :], S[c]) for c in range(10)])
     #         distances_to_mean[i, epoch, :] = dist
-    # np.save('euclid_distances', distances_to_mean)
+    # np.save('distances_to_mean/' + dataset_name + '/' + 'lids', distances_to_mean)
 
 
     from mpl_toolkits.mplot3d import Axes3D
     # distances_to_mean = np.load('distances_to_mean/distances_clean.npy')
-    # distances_to_mean = np.load('distances_to_mean/distances.npy')
+    # distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/cosine_distances_pre_lid.npy')
+    distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/cosine_distances.npy')
     # distances_to_mean = np.load('distances_to_mean/euclid_distances_clean.npy')
     # distances_to_mean = np.load('distances_to_mean/euclid_distances.npy')
     # distances_to_mean = np.load('distances_to_mean/lids_clean.npy')
-    distances_to_mean = np.load('distances_to_mean/lids.npy')
+    # distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/lids.npy')
 
     c0 = 2
     c1 = 7
 
-    sample = [np.empty((0, 10)) for epoch in range(n_epochs)]
-    for epoch in range(n_epochs):
+    # epochs = range(n_epochs)
+    epochs = list(range(3, n_epochs))
+
+    sample = [np.empty((0, 10)) for epoch in epochs]
+    for epoch in epochs:
         for i in range(N):
             pred = int(np.argmax(logits[epoch, i, :]))
+            tr = y0[i]
             label = y1[i]
 
-            if pred == c0 and label == c1:
+            # if pred == c0 and label == c1:
+            if tr == c0 and label == c1:
             # if pred == c0:
             # if y0[i] == c0:
             # if label == c1:
@@ -1299,9 +1332,12 @@ def test_mean_distances_change():
                 # sample[epoch, i] = distances_to_mean[i, epoch, 1]  # distance to predicted class centroid
                 d = distances_to_mean[i, epoch, :]
 
-                sample[epoch] = np.vstack((sample[epoch], d))
+                sample[epoch - epochs[0]] = np.vstack((sample[epoch - epochs[0]], d))
 
-    means = [np.mean(sample[epoch], 0) for epoch in range(n_epochs)]
+    st_devs = [np.std(sample[epoch - epochs[0]], 0) for epoch in epochs]
+    st_devs = np.array(st_devs)
+
+    means = [np.mean(sample[epoch - epochs[0]], 0) for epoch in epochs]
     means = np.array(means)
 
     fig = plt.figure()
@@ -1314,11 +1350,11 @@ def test_mean_distances_change():
         elif c == c1:
             color = 'C2'
 
-        plt.plot([c] * n_epochs, np.arange(n_epochs), means[:, c], color=color)
+        plt.plot([c] * len(epochs), epochs, means[:, c], color=color)
+        plt.plot([c] * len(epochs), epochs, means[:, c] - st_devs[:, c], color=color, alpha=0.25)
+        plt.plot([c] * len(epochs), epochs, means[:, c] + st_devs[:, c], color=color, alpha=0.25)
 
     plt.show()
-
-
 
     # while True:
     #     i = np.random.randint(N)
@@ -1396,6 +1432,70 @@ def test_distance_to_first():
     plt.show()
 
 
+def test_logits_accuracy():
+    dataset_name = 'cifar-10'
+    # dataset_name = 'mnist'
+    X, Y = read_dataset(name=dataset_name, type='train')
+    X1, Y1 = read_dataset(name=dataset_name, type='train25')
+
+    model_name = '25_lam_1e-2_lr_1e-2_v2'
+    # model_name = 'model25_relu'
+    logits = np.load('logits/' + dataset_name + '/' + model_name + '.npy')
+    distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/cosine_distances.npy')
+    # distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/cosine_distances_pre_lid.npy')
+    # distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/lids.npy')
+
+
+    n_epochs = logits.shape[0]
+    N = logits.shape[1]
+    d = logits.shape[2]
+
+    y0 = [int(np.argmax(Y[it])) for it in range(N)]
+    y1 = [int(np.argmax(Y1[it])) for it in range(N)]
+
+    epochs = list(range(n_epochs))
+    for epoch in epochs:
+        acc_sm = np.zeros(4)
+        cnt_sm = np.zeros(len(acc_sm))
+        for i in range(N):
+            lgts = logits[epoch, i, :]
+            preds = [[c, lgts[c]] for c in range(10)]
+            preds = list(sorted(preds, key=lambda it: -it[1]))
+            preds_ind = [it[0] for it in preds]
+            # preds_val = [it[1] for it in preds]
+
+            dists = [[c, distances_to_mean[i, epoch, c]] for c in range(10)]
+            dists = list(sorted(dists, key=lambda it: it[1]))
+            dists_ind = [it[0] for it in dists]
+            # dists_val = [it[1] for it in dists]
+
+            # if preds_ind[0] == y1[i]:
+            #     acc_sm[0] += int(preds_ind[0] == y0[i])
+            #     cnt_sm[0] += 1
+            # else:
+            #     for j in range(1, 4):
+            #         acc_sm[j] += int(y0[i] in preds_ind[:j])
+            #         # acc_sm[j] += int(y0[i] in preds_ind[:j] or y0[i] in dists_ind[:j])
+            #         cnt_sm[j] += 1
+
+            if y0[i] != y1[i]:
+                for j in range(0, 4):
+                    # acc_sm[j] += int(y0[i] in preds_ind[:j + 1])
+                    # acc_sm[j] += int(y0[i] in dists_ind[:j + 1])
+                    acc_sm[j] += int(y0[i] in preds_ind[:j + 1] or y0[i] in dists_ind[:j + 1])
+                    cnt_sm[j] += 1
+
+            # pr = np.argmax(logits[epoch, i, :])
+            #
+            # if pr == y1[i]:
+            #     acc_sm[0] += int(pr == y0[i])
+            #     cnt_sm[0] += 1
+
+        accs = acc_sm / cnt_sm
+
+        print(epoch + 1, list(np.round(accs, 3)))
+
+
 if __name__ == '__main__':
     # test_single_epoch(20)
     # test_LID_with_epoch_progress()
@@ -1410,6 +1510,7 @@ if __name__ == '__main__':
     # test_distances()
     # test_distances_with_predictions()
     # test_distances_based_weights()
-    # test_search_for_scale()
+    # test_search_for_scale( )
     test_mean_distances_change()
     # test_distance_to_first()
+    # test_logits_accuracy()
