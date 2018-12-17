@@ -1433,13 +1433,13 @@ def test_distance_to_first():
 
 
 def test_logits_accuracy():
-    dataset_name = 'cifar-10'
-    # dataset_name = 'mnist'
+    # dataset_name = 'cifar-10'
+    dataset_name = 'mnist'
     X, Y = read_dataset(name=dataset_name, type='train')
     X1, Y1 = read_dataset(name=dataset_name, type='train25')
 
-    model_name = '25_lam_1e-2_lr_1e-2_v2'
-    # model_name = 'model25_relu'
+    # model_name = '25_lam_1e-2_lr_1e-2_v2'
+    model_name = 'model25_relu'
     logits = np.load('logits/' + dataset_name + '/' + model_name + '.npy')
     distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/cosine_distances.npy')
     # distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/cosine_distances_pre_lid.npy')
@@ -1455,7 +1455,7 @@ def test_logits_accuracy():
 
     epochs = list(range(n_epochs))
     for epoch in epochs:
-        acc_sm = np.zeros(4)
+        acc_sm = np.zeros(1)
         cnt_sm = np.zeros(len(acc_sm))
         for i in range(N):
             lgts = logits[epoch, i, :]
@@ -1479,7 +1479,7 @@ def test_logits_accuracy():
             #         cnt_sm[j] += 1
 
             if y0[i] != y1[i]:
-                for j in range(0, 4):
+                for j in range(0, 1):
                     # acc_sm[j] += int(y0[i] in preds_ind[:j + 1])
                     # acc_sm[j] += int(y0[i] in dists_ind[:j + 1])
                     acc_sm[j] += int(y0[i] in preds_ind[:j + 1] or y0[i] in dists_ind[:j + 1])
@@ -1493,7 +1493,8 @@ def test_logits_accuracy():
 
         accs = acc_sm / cnt_sm
 
-        print(epoch + 1, list(np.round(accs, 3)))
+        # print(epoch + 1, list(np.round(accs, 3)))
+        print('[', epoch + 1, ',', list(np.round(accs, 3))[0], '],')
 
 
 if __name__ == '__main__':
@@ -1511,6 +1512,6 @@ if __name__ == '__main__':
     # test_distances_with_predictions()
     # test_distances_based_weights()
     # test_search_for_scale( )
-    test_mean_distances_change()
+    # test_mean_distances_change()
     # test_distance_to_first()
-    # test_logits_accuracy()
+    test_logits_accuracy()
