@@ -1253,7 +1253,8 @@ def test_mean_distances_change():
     X, Y = read_dataset(name=dataset_name, type='train')
     X1, Y1 = read_dataset(name=dataset_name, type='train25')
 
-    model_name = '25_lam_1e-2_lr_1e-2_v2'
+    model_name = '25_lam_1e-3_lr_times_1e-1_augmented_try2'
+    # model_name = 'clean_lam_1e-3_lr_times_1e-1_aug'
     # model_name = 'model25_relu'
     features = np.load('lid_features/' + dataset_name + '/' + model_name + '.npy')
     logits = np.load('logits/' + dataset_name + '/' + model_name + '.npy')
@@ -1270,105 +1271,104 @@ def test_mean_distances_change():
     y0 = [int(np.argmax(Y[it])) for it in range(N)]
     y1 = [int(np.argmax(Y1[it])) for it in range(N)]
 
-    # distances_to_mean = np.empty((N, n_epochs, 10))
-    # for epoch in range(n_epochs):
-    #     print(epoch)
-    #
-    #     indices = [set() for i in range(10)]  # indices of elements marked as cls
-    #     pred_indices = [set() for c in range(10)]
-    #     for i in range(N):
-    #         indices[y1[i]].add(i)
-    #
-    #         pred = int(np.argmax(logits[epoch, i, :]))
-    #         # pred = y0[i]
-    #         pred_indices[pred].add(i)
-    #
-    #     means = []
-    #     S = []
-    #     for c in range(10):
-    #         ind_c_c = list(pred_indices[c].intersection(indices[c]))  # elements marked as c and predicted the same
-    #         # ind_c_c = list(pred_indices[c])
-    #         S.append(features[epoch, ind_c_c, :])
-    #         mu_c_c = np.mean(S[c], 0)
-    #         means.append(mu_c_c)
-    #     means = np.array(means)
-    #
-    #     for i in range(N):
-    #         # dist = calc_cosine_distance_to_mean(means, features[epoch, i, :])
-    #         # dist = calc_dist_to_mean(means, features[epoch, i, :])
-    #         dist = np.array([calc_lid(features[epoch, i, :], S[c]) for c in range(10)])
-    #         distances_to_mean[i, epoch, :] = dist
-    # np.save('distances_to_mean/' + dataset_name + '/' + 'lids', distances_to_mean)
+    if bool(0):
+        distances_to_mean = np.empty((N, n_epochs, 10))
+        for epoch in range(n_epochs):
+            print(epoch)
 
+            indices = [set() for i in range(10)]  # indices of elements marked as cls
+            pred_indices = [set() for c in range(10)]
+            for i in range(N):
+                indices[y1[i]].add(i)
 
-    from mpl_toolkits.mplot3d import Axes3D
-    # distances_to_mean = np.load('distances_to_mean/distances_clean.npy')
-    # distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/cosine_distances_pre_lid.npy')
-    distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/cosine_distances.npy')
-    # distances_to_mean = np.load('distances_to_mean/euclid_distances_clean.npy')
-    # distances_to_mean = np.load('distances_to_mean/euclid_distances.npy')
-    # distances_to_mean = np.load('distances_to_mean/lids_clean.npy')
-    # distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/lids.npy')
+                pred = int(np.argmax(logits[epoch, i, :]))
+                # pred = y0[i]
+                pred_indices[pred].add(i)
 
-    c0 = 2
-    c1 = 7
+            means = []
+            S = []
+            for c in range(10):
+                ind_c_c = list(pred_indices[c].intersection(indices[c]))  # elements marked as c and predicted the same
+                # ind_c_c = list(pred_indices[c])
+                S.append(features[epoch, ind_c_c, :])
+                mu_c_c = np.mean(S[c], 0)
+                means.append(mu_c_c)
+            means = np.array(means)
 
-    # epochs = range(n_epochs)
-    epochs = list(range(3, n_epochs))
+            for i in range(N):
+                dist = calc_cosine_distance_to_mean(means, features[epoch, i, :])
+                # dist = calc_dist_to_mean(means, features[epoch, i, :])
+                # dist = np.array([calc_lid(features[epoch, i, :], S[c]) for c in range(10)])
+                distances_to_mean[i, epoch, :] = dist
+        np.save('distances_to_mean/' + dataset_name + '/' + model_name + '/cosine_distances', distances_to_mean)
+    else:
+        from mpl_toolkits.mplot3d import Axes3D
+        # distances_to_mean = np.load('distances_to_mean/distances_clean.npy')
+        distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/' + model_name + '/cosine_distances.npy')
+        # distances_to_mean = np.load('distances_to_mean/euclid_distances_clean.npy')
+        # distances_to_mean = np.load('distances_to_mean/euclid_distances.npy')
+        # distances_to_mean = np.load('distances_to_mean/lids_clean.npy')
+        # distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/lids.npy')
 
-    sample = [np.empty((0, 10)) for epoch in epochs]
-    for epoch in epochs:
-        for i in range(N):
-            pred = int(np.argmax(logits[epoch, i, :]))
-            tr = y0[i]
-            label = y1[i]
+        c0 = 2
+        c1 = 7
 
-            # if pred == c0 and label == c1:
-            if tr == c0 and label == c1:
-            # if pred == c0:
-            # if y0[i] == c0:
-            # if label == c1:
-                # sample[epoch, i] = distances_to_mean[i, epoch, c1]  # distance to label class centroid
-                # sample[epoch, i] = distances_to_mean[i, epoch, 1]  # distance to predicted class centroid
-                d = distances_to_mean[i, epoch, :]
+        # epochs = range(n_epochs)
+        epochs = list(range(3, n_epochs))
 
-                sample[epoch - epochs[0]] = np.vstack((sample[epoch - epochs[0]], d))
+        sample = [np.empty((0, 10)) for epoch in epochs]
+        for epoch in epochs:
+            for i in range(N):
+                # pred = int(np.argmax(logits[epoch, i, :]))
+                tr = y0[i]
+                label = y1[i]
 
-    st_devs = [np.std(sample[epoch - epochs[0]], 0) for epoch in epochs]
-    st_devs = np.array(st_devs)
+                # if pred == c0 and label == c1:
+                if tr == c0 and label == c1:
+                # if pred == c0:
+                # if y0[i] == c0:
+                # if label == c1:
+                    # sample[epoch, i] = distances_to_mean[i, epoch, c1]  # distance to label class centroid
+                    # sample[epoch, i] = distances_to_mean[i, epoch, 1]  # distance to predicted class centroid
+                    d = distances_to_mean[i, epoch, :]
 
-    means = [np.mean(sample[epoch - epochs[0]], 0) for epoch in epochs]
-    means = np.array(means)
+                    sample[epoch - epochs[0]] = np.vstack((sample[epoch - epochs[0]], d))
 
-    fig = plt.figure()
-    ax = fig.gca(projection='3d')
+        st_devs = [np.std(sample[epoch - epochs[0]], 0) for epoch in epochs]
+        st_devs = np.array(st_devs)
 
-    for c in range(10):
-        color = 'C0'
-        if c == c0:
-            color = 'C1'
-        elif c == c1:
-            color = 'C2'
+        means = [np.mean(sample[epoch - epochs[0]], 0) for epoch in epochs]
+        means = np.array(means)
 
-        plt.plot([c] * len(epochs), epochs, means[:, c], color=color)
-        plt.plot([c] * len(epochs), epochs, means[:, c] - st_devs[:, c], color=color, alpha=0.25)
-        plt.plot([c] * len(epochs), epochs, means[:, c] + st_devs[:, c], color=color, alpha=0.25)
+        fig = plt.figure()
+        ax = fig.gca(projection='3d')
 
-    plt.show()
+        for c in range(10):
+            color = 'C0'
+            if c == c0:
+                color = 'C1'
+            elif c == c1:
+                color = 'C2'
 
-    # while True:
-    #     i = np.random.randint(N)
-    #     print(y0[i], y1[i])
-    #     means = distances_to_mean[i, :, :]
-    #
-    #     fig = plt.figure()
-    #     ax = fig.gca(projection='3d')
-    #
-    #     for c in range(10):
-    #         plt.plot([c] * n_epochs, np.arange(n_epochs), means[:, c], color='C0')
-    #
-    #     plt.show()
-    #     plt.cla()
+            plt.plot([c] * len(epochs), epochs, means[:, c], color=color)
+            plt.plot([c] * len(epochs), epochs, means[:, c] - st_devs[:, c], color=color, alpha=0.25)
+            plt.plot([c] * len(epochs), epochs, means[:, c] + st_devs[:, c], color=color, alpha=0.25)
+
+        plt.show()
+
+        # while True:
+        #     i = np.random.randint(N)
+        #     print(y0[i], y1[i])
+        #     means = distances_to_mean[i, :, :]
+        #
+        #     fig = plt.figure()
+        #     ax = fig.gca(projection='3d')
+        #
+        #     for c in range(10):
+        #         plt.plot([c] * n_epochs, np.arange(n_epochs), means[:, c], color='C0')
+        #
+        #     plt.show()
+        #     plt.cla()
 
 
 def test_distance_to_first():
@@ -1433,18 +1433,16 @@ def test_distance_to_first():
 
 
 def test_logits_accuracy():
-    # dataset_name = 'cifar-10'
-    dataset_name = 'mnist'
+    dataset_name = 'cifar-10'
+    # dataset_name = 'mnist'
     X, Y = read_dataset(name=dataset_name, type='train')
     X1, Y1 = read_dataset(name=dataset_name, type='train25')
 
-    # model_name = '25_lam_1e-2_lr_1e-2_v2'
-    model_name = 'model25_relu'
+    model_name = '25_lam_1e-3_lr_times_1e-1_augmented_try2'
+    # model_name = 'model25_relu'
     logits = np.load('logits/' + dataset_name + '/' + model_name + '.npy')
-    distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/cosine_distances.npy')
-    # distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/cosine_distances_pre_lid.npy')
+    distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/' + model_name + '/cosine_distances.npy')
     # distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/lids.npy')
-
 
     n_epochs = logits.shape[0]
     N = logits.shape[1]
@@ -1480,9 +1478,9 @@ def test_logits_accuracy():
 
             if y0[i] != y1[i]:
                 for j in range(0, 1):
-                    # acc_sm[j] += int(y0[i] in preds_ind[:j + 1])
+                    acc_sm[j] += int(y0[i] in preds_ind[:j + 1])
                     # acc_sm[j] += int(y0[i] in dists_ind[:j + 1])
-                    acc_sm[j] += int(y0[i] in preds_ind[:j + 1] or y0[i] in dists_ind[:j + 1])
+                    # acc_sm[j] += int(y0[i] in preds_ind[:j + 1] or y0[i] in dists_ind[:j + 1])
                     cnt_sm[j] += 1
 
             # pr = np.argmax(logits[epoch, i, :])

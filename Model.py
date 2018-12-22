@@ -149,7 +149,7 @@ class Model:
                                                                                           lambda: self.y_),
                                                                            logits=self.logits)
             if self.dataset_name == 'cifar-10':
-                cross_entropy += 1e-2 * (W_l2_reg_sum + b_l2_reg_sum)
+                cross_entropy += 5e-4 * (W_l2_reg_sum + b_l2_reg_sum)
 
         self.cross_entropy = tf.reduce_mean(cross_entropy)
 
@@ -251,6 +251,7 @@ class Model:
             summary_writer = tf.summary.FileWriter(model_path, sess.graph)
 
             sess.run(tf.global_variables_initializer())
+            saver.save(sess, model_path + str(0))
 
             #
             # CALCULATE AND LOG INITIAL LID SCORE
@@ -290,6 +291,13 @@ class Model:
                 print('___________________________________________________________________________')
                 print('\nSTARTING EPOCH %d\n' % (i_epoch,))
 
+                if self.data_augmenter is not None:
+                    print('Augmenting data...\n')
+                    X_augmented_iter = self.data_augmenter.flow(X, batch_size=X.shape[0], shuffle=False)
+                    X_augmented = X_augmented_iter.next()
+                else:
+                    X_augmented = X
+
                 if self.update_mode == 2 or self.to_log(1):
                     #
                     #   COMPUTE CLASS FEATURE MEANS
@@ -300,7 +308,8 @@ class Model:
                     sess.run(self.reset_class_feature_sums_and_counts_op)
 
                     # cnt = 0
-                    for batch in batch_iterator(X, Y, BATCH_SIZE, False):
+                    for batch in batch_iterator(X_augmented, Y, BATCH_SIZE, False):
+
                         feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: False}
                         sess.run(self.update_class_features_sum_and_counts_op, feed_dict=feed_dict)
                         # if cnt % 50 == 0:
@@ -329,15 +338,8 @@ class Model:
                     logits_per_element = np.empty((self.DATASET_SIZE, N_CLASSES))
 
                 acs = []
-                for batch in batch_iterator_with_indices(X, Y, 128):
+                for batch in batch_iterator_with_indices(X_augmented, Y, 128):
                     i_step += 1
-
-                    # Augmentation
-                    if self.data_augmenter is not None:
-                        augmentation_iterator = self.data_augmenter.flow(batch[0],
-                                                                         batch_size=batch[0].shape[0],
-                                                                         shuffle=False)
-                        batch[0] = augmentation_iterator.next()
 
                     feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: True,
                                  self.epoch_pl: i_epoch}
