@@ -303,7 +303,7 @@ class Model:
                 print('\nSTARTING EPOCH %d\n' % (i_epoch,))
 
                 if X_augmented_iter is not None:
-                    print('Augmenting data...\n')
+                    print('Augmenting data...')
                     X_augmented = X_augmented_iter.next()
                 else:
                     X_augmented = X
@@ -334,7 +334,7 @@ class Model:
                 # TRAIN
                 #
 
-                print('\nstarting training...')
+                print('starting training...')
 
                 if self.to_log(2):
                     lid_features_per_element = np.empty((self.DATASET_SIZE, self.FC_WIDTH))
@@ -354,6 +354,10 @@ class Model:
                     feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: True,
                                  self.epoch_pl: i_epoch}
 
+                    if self.update_mode == 2:
+                        feed_dict[self.class_feature_means_pl] = class_feature_means
+                        feed_dict[self.use_modified_labels_pl] = use_modified_labels()
+
                     if self.update_mode == 1 or self.update_mode == 2:
                         feed_dict[self.is_training] = False
 
@@ -363,10 +367,6 @@ class Model:
                                                    (batch_cnt * BATCH_SIZE + batch_size)
 
                         feed_dict[self.is_training] = True
-
-                    if self.update_mode == 2:
-                        feed_dict[self.class_feature_means_pl] = class_feature_means
-                        feed_dict[self.use_modified_labels_pl] = use_modified_labels()
 
                     train_step.run(feed_dict=feed_dict)
 
@@ -477,6 +477,7 @@ class Model:
                 feed_dict = {test_accuracy_summary_scalar: test_accuracy}
 
                 if self.update_mode == 1 or self.update_mode == 2:
+                    print('accuracy of modified labels compared to true labels on a train set: %g' % (modified_labels_accuracy, ))
                     feed_dict[modified_labels_accuracy_summary_scalar] = modified_labels_accuracy
 
                 if self.to_log(0):
