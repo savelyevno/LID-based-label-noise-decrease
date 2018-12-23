@@ -15,7 +15,7 @@ from tools import bitmask_contains
 
 class Model:
     def __init__(self, dataset_name, model_name, update_mode, update_param, update_submode=0, update_subsubmode=0,
-                 log_mask=0):
+                 log_mask=0, reg_coef=5e-4):
         """
 
         :param dataset_name:         dataset name: mnist/cifar-10
@@ -45,6 +45,7 @@ class Model:
         self.update_subsubmode = update_subsubmode
         self.log_mask = log_mask
         self.model_name = model_name
+        self.reg_coef = reg_coef
 
         self.FC_WIDTH = FC_WIDTH[dataset_name]
         self.DATASET_SIZE = DATASET_SIZE[dataset_name]
@@ -129,27 +130,28 @@ class Model:
 
         with tf.name_scope('loss'):
             if self.update_mode == 0:
+                self.modified_labels_op = self.y_
                 cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.y_,
                                                                            logits=self.logits)
             if self.update_mode == 1 or self.to_log(0):
                 self.alpha_var = tf.Variable(1, False, dtype=tf.float32, name='alpha')
 
                 if self.update_mode == 1:
-                    modified_labels = tf.identity(
+                    self.modified_labels_op = tf.identity(
                         self.alpha_var * self.y_ + (1 - self.alpha_var.value()) * tf.one_hot(tf.argmax(self.logits, 1), 10),
                         name='modified_labels')
-                    cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=modified_labels,
+                    cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.modified_labels_op,
                                                                                logits=self.logits)
             if self.update_mode == 2:
-                self.new_labels = get_new_label_op(self.features_to_means_dist_op, self.y_, self.logits)
+                self.modified_labels_op = get_new_label_op(self.features_to_means_dist_op, self.y_, self.logits)
                 self.use_modified_labels_pl = tf.placeholder(tf.bool)
 
                 cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=tf.cond(self.use_modified_labels_pl,
-                                                                                          lambda: self.new_labels,
+                                                                                          lambda: self.modified_labels_op,
                                                                                           lambda: self.y_),
                                                                            logits=self.logits)
             if self.dataset_name == 'cifar-10':
-                cross_entropy += 5e-4 * (W_l2_reg_sum + b_l2_reg_sum)
+                cross_entropy += self.reg_coef * (W_l2_reg_sum + b_l2_reg_sum)
 
         self.cross_entropy = tf.reduce_mean(cross_entropy)
 
@@ -165,10 +167,10 @@ class Model:
         with tf.name_scope('modified_accuracy'):
             new_label = self.y_
             if self.update_mode == 1:
-                new_label = self.alpha_var * self.y_ + (1 - self.alpha_var.value()) * tf.one_hot(tf.argmax(self.logits, 1), 10)
+                new_label = self.modified_labels_op
             elif self.update_mode == 2:
                 new_label = tf.cond(self.use_modified_labels_pl,
-                                    lambda: self.new_labels,
+                                    lambda: self.modified_labels_op,
                                     lambda: self.y_)
 
             acc = tf.reduce_sum(tf.one_hot(tf.argmax(self.logits, 1), self.logits.shape[1]) * new_label, 1)
@@ -214,6 +216,13 @@ class Model:
         test_accuracy_summary = tf.summary.scalar(name='test_accuracy', tensor=test_accuracy_summary_scalar)
 
         summaries_to_merge = [test_accuracy_summary]
+
+        if self.update_mode == 1 or self.update_mode == 2:
+            modified_labels_accuracy_summary_scalar = tf.placeholder(tf.float32)
+            modified_labels_accuracy_summary = tf.summary.scalar(name='modified_labels_accuracy',
+                                                                 tensor=modified_labels_accuracy_summary_scalar)
+            summaries_to_merge.append(modified_labels_accuracy_summary)
+
         if self.to_log(0):
             lid_summary_scalar = tf.placeholder(tf.float32)
             lid_summary = tf.summary.scalar(name='LID', tensor=lid_summary_scalar)
@@ -272,8 +281,10 @@ class Model:
             # FIT AUGMENTER
             #
 
+            X_augmented_iter = None
             if self.data_augmenter is not None:
                 self.data_augmenter.fit(X)
+                X_augmented_iter = self.data_augmenter.flow(X, batch_size=X.shape[0], shuffle=False)
 
             #
             # EPOCH LOOP
@@ -291,9 +302,8 @@ class Model:
                 print('___________________________________________________________________________')
                 print('\nSTARTING EPOCH %d\n' % (i_epoch,))
 
-                if self.data_augmenter is not None:
+                if X_augmented_iter is not None:
                     print('Augmenting data...\n')
-                    X_augmented_iter = self.data_augmenter.flow(X, batch_size=X.shape[0], shuffle=False)
                     X_augmented = X_augmented_iter.next()
                 else:
                     X_augmented = X
@@ -307,14 +317,10 @@ class Model:
 
                     sess.run(self.reset_class_feature_sums_and_counts_op)
 
-                    # cnt = 0
                     for batch in batch_iterator(X_augmented, Y, BATCH_SIZE, False):
 
                         feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: False}
                         sess.run(self.update_class_features_sum_and_counts_op, feed_dict=feed_dict)
-                        # if cnt % 50 == 0:
-                        #     print(cnt)
-                        # cnt += 1
 
                     counts = self.class_feature_counts_var.eval(sess)
                     sums = self.class_feature_sums_var.eval(sess)
@@ -337,24 +343,34 @@ class Model:
                 if self.to_log(4):
                     logits_per_element = np.empty((self.DATASET_SIZE, N_CLASSES))
 
-                acs = []
-                for batch in batch_iterator_with_indices(X_augmented, Y, 128):
+                modified_labels_accuracy = 0
+                batch_cnt = -1
+                for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE):
                     i_step += 1
+
+                    batch_cnt += 1
+                    batch_size = batch[0].shape[0]
 
                     feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: True,
                                  self.epoch_pl: i_epoch}
+
+                    if self.update_mode == 1 or self.update_mode == 2:
+                        feed_dict[self.is_training] = False
+
+                        modified_labels = self.modified_labels_op.eval(feed_dict=feed_dict)
+                        batch_accs = np.sum(modified_labels * Y0[batch[2]])
+                        modified_labels_accuracy = (modified_labels_accuracy * batch_cnt * BATCH_SIZE + batch_accs) / \
+                                                   (batch_cnt * BATCH_SIZE + batch_size)
+
+                        feed_dict[self.is_training] = True
 
                     if self.update_mode == 2:
                         feed_dict[self.class_feature_means_pl] = class_feature_means
                         feed_dict[self.use_modified_labels_pl] = use_modified_labels()
 
                     train_step.run(feed_dict=feed_dict)
-                    # new_lbl, _ = sess.run([self.new_labels, train_step], feed_dict=feed_dict)
 
                     feed_dict[self.is_training] = False
-
-                    # new_lbl = sess.run(self.new_labels, feed_dict=feed_dict)
-                    # acs.append(np.mean(np.sum(new_lbl * Y0[batch[2]], 1)))
 
                     if self.to_log(2):
                         lid_features_per_element[batch[2], ] = self.lid_layer_op.eval(feed_dict=feed_dict)
@@ -370,7 +386,6 @@ class Model:
                         summary_str = sess.run(summary, feed_dict=feed_dict)
                         summary_writer.add_summary(summary_str, i_step)
                         summary_writer.flush()
-                print(np.mean(acs))
 
                 if self.to_log(2):
                     lid_features_per_epoch_per_element = np.append(
@@ -460,6 +475,10 @@ class Model:
                 #
 
                 feed_dict = {test_accuracy_summary_scalar: test_accuracy}
+
+                if self.update_mode == 1 or self.update_mode == 2:
+                    feed_dict[modified_labels_accuracy_summary_scalar] = modified_labels_accuracy
+
                 if self.to_log(0):
                     feed_dict[lid_summary_scalar] = lid_per_epoch[-1]
                     feed_dict[alpha_summary_scalar] = new_alpha_value
