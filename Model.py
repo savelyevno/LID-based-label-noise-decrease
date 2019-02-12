@@ -190,11 +190,13 @@ class Model:
 
         with tf.name_scope('learning_rate'):
             if self.dataset_name == 'mnist':
-                # self.lr = tf.cond(self.epoch_pl > 40, lambda: 1e-3,
-                #                   lambda: tf.cond(self.epoch_pl > 20, lambda: 1e-2,
-                #                                   lambda: 1e-1)) * 1e-1
-                self.lr = tf.cond(self.epoch_pl > 40, lambda: 1e-5, lambda: 1e-4)
-                # self.lr = 1e-4
+                self.lr = tf.cond(self.epoch_pl > 40, lambda: 1e-3,
+                                  lambda: tf.cond(self.epoch_pl > 20, lambda: 1e-2,
+                                                  lambda: 1e-1)) * 1e-3
+                # self.lr = tf.cond(self.epoch_pl > 30, lambda: 1e-6,
+                #                                      lambda: 1e-5)
+                # self.lr = tf.cond(self.epoch_pl > 40, lambda: 1e-5, lambda: 1e-4)
+                # self.lr = 1e-6
             elif self.dataset_name == 'cifar-10':
                 self.lr = tf.cond(self.epoch_pl > 80, lambda: 1e-3,
                                   lambda: tf.cond(self.epoch_pl > 40, lambda: 1e-2,

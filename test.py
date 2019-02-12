@@ -1296,11 +1296,11 @@ def test_mean_distances_change():
             means = np.array(means)
 
             for i in range(N):
-                dist = calc_cosine_distance_to_mean(means, features[epoch, i, :])
+                # dist = calc_cosine_distance_to_mean(means, features[epoch, i, :])
                 # dist = calc_dist_to_mean(means, features[epoch, i, :])
-                # dist = np.array([calc_lid(features[epoch, i, :], S[c]) for c in range(10)])
+                dist = np.array([calc_lid(features[epoch, i, :], S[c]) for c in range(10)])
                 distances_to_mean[i, epoch, :] = dist
-        np.save('distances_to_mean/' + dataset_name + '/' + model_name + '/cosine_distances', distances_to_mean)
+        np.save('distances_to_mean/' + dataset_name + '/' + model_name + '/lids', distances_to_mean)
     else:
         from mpl_toolkits.mplot3d import Axes3D
         # distances_to_mean = np.load('distances_to_mean/distances_clean.npy')
@@ -1308,10 +1308,10 @@ def test_mean_distances_change():
         # distances_to_mean = np.load('distances_to_mean/euclid_distances_clean.npy')
         # distances_to_mean = np.load('distances_to_mean/euclid_distances.npy')
         # distances_to_mean = np.load('distances_to_mean/lids_clean.npy')
-        # distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/lids.npy')
+        # distances_to_mean = np.load('distances_to_mean/' + dataset_name + '/' + model_name + '/lids.npy')
 
-        c0 = 2
-        c1 = 7
+        c0 = 0
+        c1 = 1
 
         # epochs = range(n_epochs)
         epochs = list(range(3, n_epochs))
@@ -1510,6 +1510,6 @@ if __name__ == '__main__':
     # test_distances_with_predictions()
     # test_distances_based_weights()
     # test_search_for_scale( )
-    # test_mean_distances_change()
+    test_mean_distances_change()
     # test_distance_to_first()
-    test_logits_accuracy()
+    # test_logits_accuracy()

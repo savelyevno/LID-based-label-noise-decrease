@@ -30,5 +30,5 @@ if __name__ == '__main__':
     dataset_name = 'mnist'
     # dataset_name = 'cifar-10'
     X, Y = read_dataset(dataset_name, 'train')
-    introduce_symmetric_noise(X, Y, 0.2)
-    write_dataset(dataset_name, 'train20', X, Y)
+    introduce_symmetric_noise(X, Y, 0.6)
+    write_dataset(dataset_name, 'train60', X, Y)
