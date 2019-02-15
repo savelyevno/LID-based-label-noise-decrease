@@ -55,7 +55,8 @@ def get_lid_per_element_calc_op(g_x, X):
     return LIDs
 
 
-def get_update_class_features_sum_and_counts_op(class_feature_sums_var, class_feature_counts_var, feature_op, logits_op, labels_var):
+# logits based
+def get_update_class_features_sum_and_counts_op_logits(class_feature_sums_var, class_feature_counts_var, feature_op, logits_op, labels_var):
     n_classes = labels_var.shape[1]
     pred_labels = tf.argmax(logits_op, 1)
     labels = tf.argmax(labels_var, 1)
@@ -157,3 +158,93 @@ def get_new_label_op(distance_to_class_mean_op, labels, logits):
     new_labels = tf.one_hot(new_label_cls, n_classes)
 
     return new_labels
+
+
+def get_update_class_feature_selective_sum_and_counts_op(class_feature_sums_var, class_feature_counts_var, feature_op, labels_one_hot, to_keep_arr):
+    n_classes = labels_one_hot.shape[1]
+    labels = tf.argmax(labels_one_hot, 1)
+
+    keep_labels_indices = tf.reshape(tf.where(to_keep_arr), (-1,))
+
+    gathered_features = tf.gather(feature_op, keep_labels_indices)
+    gathered_labels = tf.gather(labels, keep_labels_indices)
+    ones = tf.ones(tf.shape(keep_labels_indices))
+
+    feature_sum = tf.unsorted_segment_sum(gathered_features, gathered_labels, n_classes)
+    feature_counts = tf.unsorted_segment_sum(ones, gathered_labels, n_classes)
+
+    result_op = tf.group(
+        tf.assign_add(class_feature_sums_var, feature_sum),
+        tf.assign_add(class_feature_counts_var, feature_counts)
+    )
+
+    return result_op
+
+
+def get_update_class_covariances_selective_sum_op(class_covariance_sums, class_feature_means, features, labels_one_hot, to_keep_arr):
+    n_classes = labels_one_hot.shape[1]
+    features_dim = features.shape[1]
+    labels = tf.argmax(labels_one_hot, 1)
+
+    keep_labels_indices = tf.reshape(tf.where(to_keep_arr), (-1,))
+
+    gathered_features = tf.gather(features, keep_labels_indices)
+    gathered_labels = tf.gather(labels, keep_labels_indices)
+    gathered_means = tf.gather(class_feature_means, gathered_labels)
+
+    gathered_diff = tf.reshape(gathered_features - gathered_means, (-1, features_dim, 1))
+    gathered_diff_T = tf.reshape(gathered_diff, (-1, 1, features_dim))
+
+    gathered_covariances = tf.matmul(gathered_diff, gathered_diff_T)
+
+    new_covariance_sums = tf.unsorted_segment_sum(gathered_covariances, gathered_labels, n_classes)
+
+    result_op = tf.assign_add(class_covariance_sums, new_covariance_sums)
+
+    return result_op
+
+
+def get_LDA_logits_calc_op(class_feature_means, inv_covariance_matrix, features, class_priors):
+    n_classes = class_feature_means.shape[0]
+    n_dims = class_feature_means.shape[1]
+    batch_size = tf.shape(features)[0]
+
+    means_reshaped = tf.tile(
+        input=tf.reshape(class_feature_means, (1, n_classes, n_dims, 1)),
+        multiples=[batch_size, 1, 1, 1])
+    means_reshaped_T = tf.reshape(means_reshaped, (batch_size, n_classes, 1, n_dims))
+
+    features_reshaped = tf.tile(
+        input=tf.reshape(features, (batch_size, 1, n_dims, 1)),
+        multiples=[1, n_classes, 1, 1])
+
+    inv_covariance_matrix_reshaped = tf.tile(
+        input=tf.reshape(inv_covariance_matrix, (1, 1, n_dims, n_dims)),
+        multiples=[batch_size, n_classes, 1, 1])
+
+    class_priors_reshaped = tf.tile(
+        input=tf.reshape(class_priors, (1, n_classes, 1, 1)),
+        multiples=[batch_size, 1, 1, 1])
+
+    sm1 = tf.matmul(means_reshaped_T, tf.matmul(inv_covariance_matrix_reshaped, features_reshaped))
+    sm2 = 0.5 * tf.matmul(means_reshaped_T, tf.matmul(inv_covariance_matrix_reshaped, means_reshaped))
+    sm3 = tf.log(class_priors_reshaped)
+
+    logits = tf.reshape(sm1 - sm2 + sm3, (-1, n_classes))
+
+    return logits
+
+
+def get_Mahalanobis_distance_calc_op(class_feature_means, class_inv_covariances, features, labels_one_hot):
+    features_dim = features.shape[1]
+    labels = tf.argmax(labels_one_hot, 1)
+
+    gathered_means = tf.gather(class_feature_means, labels)
+    gathered_inv_covariances = tf.gather(class_inv_covariances, labels)
+
+    diff = tf.reshape(features - gathered_means, (-1, features_dim, 1))
+    diff_T = tf.reshape(diff, (-1, 1, features_dim))
+
+    result = tf.matmul(diff_T, tf.matmul(gathered_inv_covariances, diff))
+
+    return tf.reshape(result, (-1,))

@@ -5,7 +5,8 @@ from tensorflow.python import debug as tf_debug
 
 from networks import build_mnist, build_cifar_10
 from tf_ops import get_euclid_dist_to_mean_calc_op, get_new_label_op, get_cosine_dist_to_mean_calc_op, get_lid_calc_op,\
-    get_update_class_features_sum_and_counts_op
+    get_update_class_features_sum_and_counts_op_logits, get_update_class_feature_selective_sum_and_counts_op, \
+    get_update_class_covariances_selective_sum_op, get_LDA_logits_calc_op, get_Mahalanobis_distance_calc_op
 from consts import *
 from Timer import timer
 from preprocessing import read_dataset
@@ -23,8 +24,9 @@ class Model:
         :param update_mode:     0: vanilla
                                 1: as in the paper
                                 2: per element
-        :param update_param:    for update_mode = 2: number of epoch to start using modified labels
-        :param update_submode:  for update_mode = 2:
+                                3: lda
+        :param update_param:    for update_mode = 2 or 3: number of epoch to start using modified labels
+        :param update_submode:  for update_mode = 2 or 3:
                                                         0: use pre lid features
                                                         1: use lid features
         :param update_subsubmode: for update_mode = 2:
@@ -47,8 +49,8 @@ class Model:
         self.model_name = model_name
         self.reg_coef = reg_coef
 
-        self.FC_WIDTH = FC_WIDTH[dataset_name]
-        self.DATASET_SIZE = DATASET_SIZE[dataset_name]
+        self.fc_width = FC_WIDTH[dataset_name]
+        self.dataset_size = DATASET_SIZE[dataset_name]
 
     def _build(self):
         #
@@ -69,11 +71,11 @@ class Model:
         #
 
         self.data_augmenter = None
-        if self.dataset_name == 'cifar-10':
-            self.data_augmenter = tf.keras.preprocessing.image.ImageDataGenerator(
-                width_shift_range=0.2,
-                height_shift_range=0.2,
-                horizontal_flip=True)
+        # if self.dataset_name == 'cifar-10':
+        #     self.data_augmenter = tf.keras.preprocessing.image.ImageDataGenerator(
+        #         width_shift_range=0.2,
+        #         height_shift_range=0.2,
+        #         horizontal_flip=True)
 
         #
         # BUILD NETWORK
@@ -104,25 +106,68 @@ class Model:
             elif self.update_submode == 1:
                 used_lid_layer = self.lid_layer_op
 
-            self.class_feature_sums_var = tf.Variable(np.zeros((N_CLASSES, self.FC_WIDTH)), dtype=tf.float32)
+            self.class_feature_sums_var = tf.Variable(np.zeros((N_CLASSES, self.fc_width)), dtype=tf.float32)
             self.class_feature_counts_var = tf.Variable(np.zeros((N_CLASSES, )), dtype=tf.float32)
 
-            self.update_class_features_sum_and_counts_op = get_update_class_features_sum_and_counts_op(
+            self.update_class_features_sum_and_counts_op = get_update_class_features_sum_and_counts_op_logits(
                 self.class_feature_sums_var, self.class_feature_counts_var,
                 used_lid_layer, self.logits, self.y_)
 
             self.reset_class_feature_sums_and_counts_op = tf.group(
-                tf.assign(self.class_feature_sums_var, tf.zeros((N_CLASSES, self.FC_WIDTH))),
+                tf.assign(self.class_feature_sums_var, tf.zeros((N_CLASSES, self.fc_width))),
                 tf.assign(self.class_feature_counts_var, tf.zeros(N_CLASSES, ))
             )
 
-            self.class_feature_means_pl = tf.placeholder(tf.float32, (N_CLASSES, self.FC_WIDTH))
+            self.class_feature_means_pl = tf.placeholder(tf.float32, (N_CLASSES, self.fc_width))
 
             self.features_to_means_dist_op = None
             if self.update_subsubmode == 0:
                 self.features_to_means_dist_op = get_cosine_dist_to_mean_calc_op(used_lid_layer, self.class_feature_means_pl)
             elif self.update_subsubmode == 1:
                 self.features_to_means_dist_op = get_euclid_dist_to_mean_calc_op(used_lid_layer, self.class_feature_means_pl)
+
+        # LDA predictor
+
+        if self.update_mode == 3:
+            self.feature_layer = None
+            if self.update_subsubmode == 0:
+                self.feature_layer = self.pre_lid_layer_op
+            elif self.update_subsubmode == 1:
+                self.feature_layer = self.lid_layer_op
+
+            self.class_feature_sums_var = tf.Variable(np.zeros((N_CLASSES, self.fc_width)), dtype=tf.float32)
+            self.class_feature_counts_var = tf.Variable(np.zeros((N_CLASSES,)), dtype=tf.float32)
+            self.class_covariance_sums_var = tf.Variable(np.zeros((N_CLASSES, self.fc_width, self.fc_width)), dtype=tf.float32)
+
+            self.features_pl = tf.placeholder(tf.float32, (None, self.fc_width))
+            self.class_feature_ops_keep_array_pl = tf.placeholder(tf.bool, (None,))
+
+            self.update_class_features_sum_and_counts_op = get_update_class_feature_selective_sum_and_counts_op(
+                self.class_feature_sums_var, self.class_feature_counts_var, self.features_pl, self.y_,
+                self.class_feature_ops_keep_array_pl)
+
+            self.class_feature_means_pl = tf.placeholder(tf.float32, (N_CLASSES, self.fc_width))
+
+            self.update_class_covariances_op = get_update_class_covariances_selective_sum_op(
+                self.class_covariance_sums_var, self.class_feature_means_pl, self.features_pl, self.y_,
+                self.class_feature_ops_keep_array_pl)
+
+            self.class_inv_covariances_pl = tf.placeholder(tf.float32, (N_CLASSES, self.fc_width, self.fc_width))
+            self.inv_covariance_pl = tf.placeholder(tf.float32, (self.fc_width, self.fc_width))
+
+            self.reset_class_feature_sums_counts_and_covariance_op = tf.group(
+                tf.assign(self.class_feature_sums_var, tf.zeros((N_CLASSES, self.fc_width), tf.float32)),
+                tf.assign(self.class_feature_counts_var, tf.zeros((N_CLASSES,), tf.float32)),
+                tf.assign(self.class_covariance_sums_var, tf.zeros((N_CLASSES, self.fc_width, self.fc_width), tf.float32))
+            )
+
+            self.mahalanobis_dist_calc = get_Mahalanobis_distance_calc_op(self.class_feature_means_pl,
+                                                                          self.class_inv_covariances_pl,
+                                                                          self.features_pl, self.y_)
+
+            self.LDA_logits = get_LDA_logits_calc_op(self.class_feature_means_pl, self.inv_covariance_pl,
+                                                     self.feature_layer, np.ones(N_CLASSES, np.float32) / N_CLASSES)
+            self.LDA_predictions = tf.one_hot(tf.argmax(self.LDA_logits, 1), N_CLASSES)
 
         #
         # CREATE LOSS
@@ -150,6 +195,16 @@ class Model:
                                                                                           lambda: self.modified_labels_op,
                                                                                           lambda: self.y_),
                                                                            logits=self.logits)
+
+            if self.update_mode == 3:
+                self.LDA_labels_weight_pl = tf.placeholder(tf.float32, ())
+                self.modified_labels_op = self.LDA_labels_weight_pl * tf.stop_gradient(self.LDA_predictions) + \
+                                          (1 - self.LDA_labels_weight_pl) * self.y_
+
+                cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(
+                    labels=self.modified_labels_op,
+                    logits=self.logits)
+
             if self.dataset_name == 'cifar-10':
                 cross_entropy += self.reg_coef * (W_l2_reg_sum + b_l2_reg_sum)
 
@@ -172,6 +227,8 @@ class Model:
                 new_label = tf.cond(self.use_modified_labels_pl,
                                     lambda: self.modified_labels_op,
                                     lambda: self.y_)
+            elif self.update_mode == 3:
+                new_label = self.modified_labels_op
 
             acc = tf.reduce_sum(tf.one_hot(tf.argmax(self.logits, 1), self.logits.shape[1]) * new_label, 1)
             self.modified_accuracy = tf.reduce_mean(acc, name='accuracy')
@@ -182,6 +239,11 @@ class Model:
         X, Y = read_dataset(name=self.dataset_name, type=train_dataset_type)
         X0, Y0 = read_dataset(name=self.dataset_name, type='train')
 
+        Y_ind = np.argmax(Y, 1)
+        Y_ind_per_class = [[] for c in range(N_CLASSES)]
+        for i in range(self.dataset_size):
+            Y_ind_per_class[Y_ind[i]].append(i)
+
         X_test, Y_test = read_dataset(name=self.dataset_name, type='test')
 
         self._build()
@@ -190,12 +252,12 @@ class Model:
 
         with tf.name_scope('learning_rate'):
             if self.dataset_name == 'mnist':
-                self.lr = tf.cond(self.epoch_pl > 40, lambda: 1e-3,
-                                  lambda: tf.cond(self.epoch_pl > 20, lambda: 1e-2,
-                                                  lambda: 1e-1)) * 1e-3
+                # self.lr = tf.cond(self.epoch_pl > 40, lambda: 1e-3,
+                #                   lambda: tf.cond(self.epoch_pl > 20, lambda: 1e-2,
+                #                                   lambda: 1e-1)) * 1e-3
                 # self.lr = tf.cond(self.epoch_pl > 30, lambda: 1e-6,
                 #                                      lambda: 1e-5)
-                # self.lr = tf.cond(self.epoch_pl > 40, lambda: 1e-5, lambda: 1e-4)
+                self.lr = tf.cond(self.epoch_pl > 40, lambda: 1e-5, lambda: 1e-4)
                 # self.lr = 1e-6
             elif self.dataset_name == 'cifar-10':
                 self.lr = tf.cond(self.epoch_pl > 80, lambda: 1e-3,
@@ -219,7 +281,7 @@ class Model:
 
         summaries_to_merge = [test_accuracy_summary]
 
-        if self.update_mode == 1 or self.update_mode == 2:
+        if self.update_mode == 1 or self.update_mode == 2 or self.update_mode == 3:
             modified_labels_accuracy_summary_scalar = tf.placeholder(tf.float32)
             modified_labels_accuracy_summary = tf.summary.scalar(name='modified_labels_accuracy',
                                                                  tensor=modified_labels_accuracy_summary_scalar)
@@ -240,13 +302,15 @@ class Model:
         model_path = 'checkpoints/' + self.dataset_name + '/' + self.model_name + '/'
 
         if self.to_log(1):
-            class_feature_means_per_epoch = np.empty((0, N_CLASSES, self.FC_WIDTH))
+            class_feature_means_per_epoch = np.empty((0, N_CLASSES, self.fc_width))
         if self.to_log(2):
-            lid_features_per_epoch_per_element = np.empty((0, self.DATASET_SIZE, self.FC_WIDTH))
+            lid_features_per_epoch_per_element = np.empty((0, self.dataset_size, self.fc_width))
         if self.to_log(3):
-            pre_lid_features_per_epoch_per_element = np.empty((0, self.DATASET_SIZE, self.FC_WIDTH))
+            pre_lid_features_per_epoch_per_element = np.empty((0, self.dataset_size, self.fc_width))
         if self.to_log(4):
-            logits_per_epoch_per_element = np.empty((0, self.DATASET_SIZE, N_CLASSES))
+            logits_per_epoch_per_element = np.empty((0, self.dataset_size, N_CLASSES))
+
+        lda_features_per_epoch = np.empty((0, self.dataset_size, self.fc_width))
 
         #
         # SESSION START
@@ -320,7 +384,6 @@ class Model:
                     sess.run(self.reset_class_feature_sums_and_counts_op)
 
                     for batch in batch_iterator(X_augmented, Y, BATCH_SIZE, False):
-
                         feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: False}
                         sess.run(self.update_class_features_sum_and_counts_op, feed_dict=feed_dict)
 
@@ -332,18 +395,91 @@ class Model:
                     if self.to_log(1):
                         class_feature_means_per_epoch = np.append(class_feature_means_per_epoch, class_feature_means)
 
+                if self.update_mode == 3:
+                    #
+                    # COMPUTE LDA PARAMETERS
+                    #
+
+                    print('Computing LDA parameters')
+
+                    features = np.empty((self.dataset_size, self.fc_width))
+                    for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE, False):
+                        feed_dict = {self.nn_input: batch[0], self.is_training: False}
+                        features[batch[2]] = self.feature_layer.eval(feed_dict=feed_dict)
+
+                    # initially select random subset of samples
+                    keep_arr = np.random.binomial(1, 0.5, self.dataset_size).astype(bool)
+                    for i in range(3 + 1):
+                        sess.run(self.reset_class_feature_sums_counts_and_covariance_op)
+
+                        # compute class feature means
+                        for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
+                            feed_dict = {self.features_pl: features[batch[2]],
+                                         self.y_: batch[1],
+                                         self.class_feature_ops_keep_array_pl: keep_arr[batch[2]]}
+                            sess.run(self.update_class_features_sum_and_counts_op, feed_dict=feed_dict)
+
+                        counts = self.class_feature_counts_var.eval(sess)
+                        sums = self.class_feature_sums_var.eval(sess)
+
+                        self.class_feature_means = sums / counts.reshape((-1, 1))
+
+                        # compute class feature covariance matrices
+                        for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
+                            feed_dict = {self.features_pl: features[batch[2]], self.y_: batch[1],
+                                         self.class_feature_means_pl: self.class_feature_means,
+                                         self.class_feature_ops_keep_array_pl: keep_arr[batch[2]]}
+                            sess.run(self.update_class_covariances_op, feed_dict=feed_dict)
+
+                        class_covariance_sums = self.class_covariance_sums_var.eval(sess)
+                        class_covariances = class_covariance_sums / counts.reshape((-1, 1, 1)) +\
+                                            np.eye(self.fc_width, self.fc_width) * EPS
+                        class_inv_covariances = np.array([np.linalg.inv(it) for it in class_covariances])
+
+                        print('class covariance determinants:',
+                              [np.linalg.det(it) for it in class_covariances])
+                        print('class min covariance diagonal element:',
+                              [np.min(np.abs(np.diag(it))) for it in class_covariances])
+                        print('class min covariance eigenvalue:',
+                              [np.linalg.svd(it)[1][-1] for it in class_covariances])
+
+                        # compute tied covariance matrix
+                        covariance = np.sum(class_covariance_sums, 0) / np.sum(counts) +\
+                                     np.eye(self.fc_width, self.fc_width) * EPS
+                        self.inv_covariance = np.linalg.inv(covariance)
+
+                        print('tied covariance determinant:',
+                              np.linalg.det(covariance))
+                        print('min tied covariance diagonal element:',
+                              np.min(np.abs(np.diag(covariance))))
+                        print('min tied covariance eigenvalue:',
+                              np.linalg.svd(covariance)[1][-1])
+
+                        # compute Mahalanobis distance based anomaly scores
+                        mahalanobis_distances = np.empty(self.dataset_size)
+                        for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
+                            feed_dict = {self.features_pl: features[batch[2]],
+                                         self.class_feature_means_pl: self.class_feature_means,
+                                         self.class_inv_covariances_pl: class_inv_covariances,
+                                         self.y_: batch[1]}
+                            mah_dists = sess.run(self.mahalanobis_dist_calc, feed_dict=feed_dict)
+                            mahalanobis_distances[batch[2]] = mah_dists
+
+                        mahalanobis_distances_per_class = [np.take(mahalanobis_distances, Y_ind_per_class[c]) for c in range(N_CLASSES)]
+
+                        # select less anomalous samples for the next subset
+                        medians = np.array([np.quantile(arr, 0.5) for arr in mahalanobis_distances_per_class])
+                        print('Mahalanobis distance medians per class', [round(it**0.5, 1) for it in medians])
+
+                        keep_arr = mahalanobis_distances < np.take(medians, Y_ind)
+
+                print('')
+
                 #
                 # TRAIN
                 #
 
                 print('starting training...')
-
-                if self.to_log(2):
-                    lid_features_per_element = np.empty((self.DATASET_SIZE, self.FC_WIDTH))
-                if self.to_log(3):
-                    pre_lid_features_per_element = np.empty((self.DATASET_SIZE, self.FC_WIDTH))
-                if self.to_log(4):
-                    logits_per_element = np.empty((self.DATASET_SIZE, N_CLASSES))
 
                 modified_labels_accuracy = 0
                 batch_cnt = -1
@@ -360,26 +496,19 @@ class Model:
                         feed_dict[self.class_feature_means_pl] = class_feature_means
                         feed_dict[self.use_modified_labels_pl] = use_modified_labels()
 
-                    if self.update_mode == 1 or self.update_mode == 2:
-                        feed_dict[self.is_training] = False
+                    if self.update_mode == 3:
+                        feed_dict[self.LDA_labels_weight_pl] = 1 - self.alpha_var.eval(sess)
+                        feed_dict[self.class_feature_means_pl] = self.class_feature_means
+                        feed_dict[self.inv_covariance_pl] = self.inv_covariance
 
+                    if self.update_mode == 1 or self.update_mode == 2 or self.update_mode == 3:
                         modified_labels = self.modified_labels_op.eval(feed_dict=feed_dict)
                         batch_accs = np.sum(modified_labels * Y0[batch[2]])
                         modified_labels_accuracy = (modified_labels_accuracy * batch_cnt * BATCH_SIZE + batch_accs) / \
                                                    (batch_cnt * BATCH_SIZE + batch_size)
 
-                        feed_dict[self.is_training] = True
-
                     train_step.run(feed_dict=feed_dict)
-
                     feed_dict[self.is_training] = False
-
-                    if self.to_log(2):
-                        lid_features_per_element[batch[2], ] = self.lid_layer_op.eval(feed_dict=feed_dict)
-                    if self.to_log(3):
-                        pre_lid_features_per_element[batch[2], ] = self.pre_lid_layer_op.eval(feed_dict=feed_dict)
-                    if self.to_log(4):
-                        logits_per_element[batch[2], ] = self.logits.eval(feed_dict=feed_dict)
 
                     if i_step % 100 == 0:
                         train_accuracy = self.accuracy.eval(feed_dict=feed_dict)
@@ -390,20 +519,20 @@ class Model:
                         summary_writer.flush()
 
                 if self.to_log(2):
-                    lid_features_per_epoch_per_element = np.append(
-                        lid_features_per_epoch_per_element,
-                        np.expand_dims(lid_features_per_element, 0),
-                        0)
+                    lid_features_per_element = np.empty((self.dataset_size, self.fc_width))
                 if self.to_log(3):
-                    pre_lid_features_per_epoch_per_element = np.append(
-                        pre_lid_features_per_epoch_per_element,
-                        np.expand_dims(pre_lid_features_per_element, 0),
-                        0)
+                    pre_lid_features_per_element = np.empty((self.dataset_size, self.fc_width))
                 if self.to_log(4):
-                    logits_per_epoch_per_element = np.append(
-                        logits_per_epoch_per_element,
-                        np.expand_dims(logits_per_element, 0),
-                        0)
+                    logits_per_element = np.empty((self.dataset_size, N_CLASSES))
+
+                for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE, False):
+                    feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: False}
+                    if self.to_log(2):
+                        lid_features_per_element[batch[2]] = self.lid_layer_op.eval(feed_dict=feed_dict)
+                    if self.to_log(3):
+                        pre_lid_features_per_element[batch[2]] = self.pre_lid_layer_op.eval(feed_dict=feed_dict)
+                    if self.to_log(4):
+                        logits_per_element[batch[2]] = self.logits.eval(feed_dict=feed_dict)
 
                 if self.update_mode == 1 or self.to_log(0):
                     #
@@ -419,19 +548,18 @@ class Model:
                 # CHECK FOR STOPPING INIT PERIOD
                 #
 
-                if self.update_mode == 1 or self.to_log(0):
+                if self.update_mode == 1 or self.update_mode == 3 or self.to_log(0):
                     if turning_epoch == -1 and i_epoch > EPOCH_WINDOW:
                         last_w_lids = lid_per_epoch[-EPOCH_WINDOW - 1: -1]
 
                         lid_check_value = new_lid_score - last_w_lids.mean() - 2 * last_w_lids.var() ** 0.5
 
-                        if self.update_mode == 1:
-                            print('LID check:', lid_check_value)
+                        print('LID check:', lid_check_value)
 
                         if lid_check_value > 0:
                             turning_epoch = i_epoch - 1
 
-                            if self.update_mode == 1:
+                            if self.update_mode == 1 or self.update_mode == 3:
                                 saver.restore(sess, model_path + str(i_epoch - 1))
                                 print('Turning point passed, reverting to previous epoch and starting using modified loss')
 
@@ -441,12 +569,11 @@ class Model:
 
                     if turning_epoch != -1:
                         new_alpha_value = np.exp(-(i_epoch / N_EPOCHS) * (lid_per_epoch[-1] / lid_per_epoch[:-1].min()))
-                        if self.update_mode == 1:
-                            print('\nnew alpha value:', new_alpha_value)
+                        print('\nnew alpha value:', new_alpha_value)
                     else:
                         new_alpha_value = 1
 
-                    if self.update_mode == 1 or self.to_log(0):
+                    if self.update_mode == 1 or self.update_mode == 3 or self.to_log(0):
                         sess.run(self.alpha_var.assign(new_alpha_value))
 
                 #
@@ -478,7 +605,7 @@ class Model:
 
                 feed_dict = {test_accuracy_summary_scalar: test_accuracy}
 
-                if self.update_mode == 1 or self.update_mode == 2:
+                if self.update_mode == 1 or self.update_mode == 2 or self.update_mode == 3:
                     print('accuracy of modified labels compared to true labels on a train set: %g' % (modified_labels_accuracy, ))
                     feed_dict[modified_labels_accuracy_summary_scalar] = modified_labels_accuracy
 
@@ -500,10 +627,22 @@ class Model:
                 if self.to_log(1):
                     np.save('class_feature_means/' + self.dataset_name + '/' + self.model_name, class_feature_means_per_epoch)
                 if self.to_log(2):
+                    lid_features_per_epoch_per_element = np.append(
+                        lid_features_per_epoch_per_element,
+                        np.expand_dims(lid_features_per_element, 0),
+                        0)
                     np.save('lid_features/' + self.dataset_name + '/' + self.model_name, lid_features_per_epoch_per_element)
                 if self.to_log(3):
+                    pre_lid_features_per_epoch_per_element = np.append(
+                        pre_lid_features_per_epoch_per_element,
+                        np.expand_dims(pre_lid_features_per_element, 0),
+                        0)
                     np.save('pre_lid_features/' + self.dataset_name + '/' + self.model_name, pre_lid_features_per_epoch_per_element)
                 if self.to_log(4):
+                    logits_per_epoch_per_element = np.append(
+                        logits_per_epoch_per_element,
+                        np.expand_dims(logits_per_element, 0),
+                        0)
                     np.save('logits/' + self.dataset_name + '/' + self.model_name, logits_per_epoch_per_element)
 
                 print(timer.stop())
