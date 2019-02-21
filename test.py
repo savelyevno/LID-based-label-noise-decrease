@@ -1501,8 +1501,8 @@ def test_mean_and_covariance():
     # X, Y = read_dataset(name=dataset_name, type='train')
     X1, Y1 = read_dataset(name=dataset_name, type='train20')
 
-    # model_name = '20_lda_pre_relu_5_lam_1e-3_lr_times_1e-1_2'
-    model_name = 'lda_features'
+    model_name = 'clean_paper_lam_1e-3_lr_times_1e-1_aug_prebn'
+    # model_name = 'clean_paper_lr_1e-5_30_1e-6'
     features = np.load('pre_lid_features/' + dataset_name + '/' + model_name + '.npy')
 
     n_epochs = features.shape[0]
@@ -1512,20 +1512,30 @@ def test_mean_and_covariance():
     # y0 = [int(np.argmax(Y[it])) for it in range(N)]
     y1 = [int(np.argmax(Y1[it])) for it in range(N)]
 
-    # epochs = range(1, n_epochs)
-    epochs = [3]
+    epochs = range(n_epochs)
     for i_epoch in epochs:
-        print(i_epoch)
+        print('epoch', i_epoch)
         means = np.zeros((10, d))
         cnts = np.zeros(10)
         covariances = np.zeros((10, d, d))
 
         keep = np.random.binomial(1, 0.5, N)
 
+        # print(features[i_epoch, 0, 0])
+        # print(features[i_epoch, 1, 0])
+        # print(features[i_epoch, 2, 0])
+
+        neq = []
         for j in range(d):
             x = features[i_epoch, :, j]
             if np.sum(np.abs(x - x[0])) < 1e-6:
-                print(j)
+                # print(j)
+                neq.append(j)
+        print(len(neq), neq)
+        for j in neq:
+            print(features[i_epoch, 0, j])
+
+        continue
 
         for i in range(N):
             if keep[i] == 0:

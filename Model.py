@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import scipy.stats
 import tensorflow as tf
 from tensorflow.python import debug as tf_debug
 
@@ -658,6 +659,50 @@ class Model:
         return bitmask_contains(self.log_mask, bit)
 
     @staticmethod
+    def compute_features(dataset_name, model_name, epoch, dataset_type, compute_pre_relu):
+        with tf.Session() as sess:
+            full_model_name = 'checkpoints/' + dataset_name + '/' + model_name + '/' + str(epoch)
+            saver = tf.train.import_meta_graph(full_model_name + '.meta')
+            saver.restore(sess, full_model_name)
+
+            graph = tf.get_default_graph()
+
+            x = graph.get_tensor_by_name('x:0')
+            y_ = graph.get_tensor_by_name('y_:0')
+            is_training = graph.get_tensor_by_name('is_training:0')
+            # accuracy_op = graph.get_tensor_by_name('accuracy:0')
+            if compute_pre_relu:
+                features_op = graph.get_tensor_by_name('fc1/pre_lid_input:0')
+            else:
+                features_op = graph.get_tensor_by_name('fc1/lid_input:0')
+            pre_bn = graph.get_tensor_by_name('fc1/add:0')
+            w_var = graph.get_tensor_by_name('fc1/Variable:0')
+            b_var = graph.get_tensor_by_name('fc1/Variable_1:0')
+
+            w = w_var.eval({}, sess)
+            b = b_var.eval({}, sess)
+            print(np.linalg.norm(w), np.linalg.norm(b))
+            print(np.mean(w), np.mean(b))
+            print(scipy.stats.kurtosis(w.reshape(-1)), scipy.stats.kurtosis(b.reshape(-1)))
+            print(list(b))
+            for it in w:
+                print(list(np.round(it, 10)))
+            exit(0)
+
+            X, Y = read_dataset(name=dataset_name, type=dataset_type)
+
+            features = np.empty((X.shape[0], features_op.shape[1]))
+
+            for batch in batch_iterator_with_indices(X, Y, BATCH_SIZE, False):
+                batch_res = features_op.eval(feed_dict={x: batch[0], y_: batch[1], is_training: False})
+                features[batch[2]] = batch_res
+
+            if compute_pre_relu:
+                np.save('pre_lid_features/' + dataset_name + '/' + model_name + '_' + dataset_type, np.expand_dims(features, 0))
+            else:
+                np.save('lid_features/' + dataset_name + '/' + model_name + '_' + dataset_type, np.expand_dims(features, 0))
+
+    @staticmethod
     def test(dataset_name, model_name, epoch):
         with tf.Session() as sess:
             full_model_name = 'checkpoints/' + dataset_name + '/' + model_name + '/' + str(epoch) + '.meta'
@@ -710,46 +755,3 @@ class Model:
         lid_score /= LID_BATCH_CNT
 
         return lid_score
-
-    # def calc_lid_per_element(X, Y, lid_input_layer, x, lid_per_element_calc_op, lid_sample_set_pl, is_training):
-    #     print('\ncalculating LID for the whole dataset...')
-    #
-    #     #
-    #     # FILL LID SAMPLE SET
-    #     #
-    #
-    #     batch_size = 1000
-    #
-    #     lid_sample_set = np.empty((0, lid_input_layer.shape[1]), dtype=np.float32)
-    #     i_batch = -1
-    #     for batch in batch_iterator(X, Y, batch_size):
-    #         i_batch += 1
-    #
-    #         lid_layer = lid_input_layer.eval(feed_dict={x: batch[0], is_training: False})
-    #         lid_sample_set = np.vstack((lid_sample_set, lid_layer))
-    #
-    #         # if (i_batch + 1) % 100 == 0:
-    #         #     print('\t filled LID sample set for %d/%d' % ((i_batch + 1) * BATCH_SIZE, LID_SAMPLE_SET_SIZE))
-    #
-    #         if lid_sample_set.shape[0] >= LID_SAMPLE_SET_SIZE:
-    #             break
-    #
-    #     #
-    #     # CALCULATE LID PER DATASET ELEMENT
-    #     #
-    #
-    #     epoch_lids_per_element = np.empty((0,))
-    #     i_batch = -1
-    #     for batch in batch_iterator(X, Y, batch_size, False):
-    #         i_batch += 1
-    #
-    #         lids_per_batch_element = lid_per_element_calc_op.eval(
-    #             feed_dict={x: batch[0], lid_sample_set_pl: lid_sample_set, is_training: False})
-    #         epoch_lids_per_element = np.append(epoch_lids_per_element, lids_per_batch_element)
-    #
-    #         # if (i_batch + 1) % 100 == 0:
-    #         #     print('\t calculated LID for %d/%d' % ((i_batch + 1) * batch_size, DATASET_SIZE))
-    #
-    #     epoch_lids_per_element = epoch_lids_per_element.reshape([-1, 1])
-    #
-    #     return epoch_lids_per_element
