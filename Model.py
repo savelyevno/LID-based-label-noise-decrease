@@ -353,6 +353,13 @@ class Model:
                 X_augmented_iter = self.data_augmenter.flow(X, batch_size=X.shape[0], shuffle=False)
 
             #
+            # LDA INIT
+            #
+            if self.update_mode == 3:
+                self.class_feature_means = np.zeros((N_CLASSES, self.fc_width))
+                self.inv_covariance = np.eye(self.fc_width, self.fc_width)
+
+            #
             # EPOCH LOOP
             #
 
@@ -394,84 +401,6 @@ class Model:
 
                     if self.to_log(1):
                         class_feature_means_per_epoch = np.append(class_feature_means_per_epoch, class_feature_means)
-
-                if self.update_mode == 3:
-                    #
-                    # COMPUTE LDA PARAMETERS
-                    #
-
-                    print('Computing LDA parameters')
-
-                    features = np.empty((self.dataset_size, self.fc_width))
-                    for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE, False):
-                        feed_dict = {self.nn_input: batch[0], self.is_training: False}
-                        features[batch[2]] = self.feature_layer.eval(feed_dict=feed_dict)
-
-                    # initially select random subset of samples
-                    keep_arr = np.random.binomial(1, 0.5, self.dataset_size).astype(bool)
-                    for i in range(3 + 1):
-                        sess.run(self.reset_class_feature_sums_counts_and_covariance_op)
-
-                        # compute class feature means
-                        for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
-                            feed_dict = {self.features_pl: features[batch[2]],
-                                         self.y_: batch[1],
-                                         self.class_feature_ops_keep_array_pl: keep_arr[batch[2]]}
-                            sess.run(self.update_class_features_sum_and_counts_op, feed_dict=feed_dict)
-
-                        counts = self.class_feature_counts_var.eval(sess)
-                        sums = self.class_feature_sums_var.eval(sess)
-
-                        self.class_feature_means = sums / counts.reshape((-1, 1))
-
-                        # compute class feature covariance matrices
-                        for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
-                            feed_dict = {self.features_pl: features[batch[2]], self.y_: batch[1],
-                                         self.class_feature_means_pl: self.class_feature_means,
-                                         self.class_feature_ops_keep_array_pl: keep_arr[batch[2]]}
-                            sess.run(self.update_class_covariances_op, feed_dict=feed_dict)
-
-                        class_covariance_sums = self.class_covariance_sums_var.eval(sess)
-                        class_covariances = class_covariance_sums / counts.reshape((-1, 1, 1)) +\
-                                            np.eye(self.fc_width, self.fc_width) * EPS
-                        class_inv_covariances = np.array([np.linalg.inv(it) for it in class_covariances])
-
-                        print('class covariance determinants:',
-                              [np.linalg.det(it) for it in class_covariances])
-                        print('class min covariance diagonal element:',
-                              [np.min(np.abs(np.diag(it))) for it in class_covariances])
-                        print('class min covariance eigenvalue:',
-                              [np.linalg.svd(it)[1][-1] for it in class_covariances])
-
-                        # compute tied covariance matrix
-                        covariance = np.sum(class_covariance_sums, 0) / np.sum(counts) +\
-                                     np.eye(self.fc_width, self.fc_width) * EPS
-                        self.inv_covariance = np.linalg.inv(covariance)
-
-                        print('tied covariance determinant:',
-                              np.linalg.det(covariance))
-                        print('min tied covariance diagonal element:',
-                              np.min(np.abs(np.diag(covariance))))
-                        print('min tied covariance eigenvalue:',
-                              np.linalg.svd(covariance)[1][-1])
-
-                        # compute Mahalanobis distance based anomaly scores
-                        mahalanobis_distances = np.empty(self.dataset_size)
-                        for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
-                            feed_dict = {self.features_pl: features[batch[2]],
-                                         self.class_feature_means_pl: self.class_feature_means,
-                                         self.class_inv_covariances_pl: class_inv_covariances,
-                                         self.y_: batch[1]}
-                            mah_dists = sess.run(self.mahalanobis_dist_calc, feed_dict=feed_dict)
-                            mahalanobis_distances[batch[2]] = mah_dists
-
-                        mahalanobis_distances_per_class = [np.take(mahalanobis_distances, Y_ind_per_class[c]) for c in range(N_CLASSES)]
-
-                        # select less anomalous samples for the next subset
-                        medians = np.array([np.quantile(arr, 0.5) for arr in mahalanobis_distances_per_class])
-                        print('Mahalanobis distance medians per class', [round(it**0.5, 1) for it in medians])
-
-                        keep_arr = mahalanobis_distances < np.take(medians, Y_ind)
 
                 print('')
 
@@ -518,6 +447,10 @@ class Model:
                         summary_writer.add_summary(summary_str, i_step)
                         summary_writer.flush()
 
+                #
+                # LOG FEATURES/LOGITS
+                #
+
                 if self.to_log(2):
                     lid_features_per_element = np.empty((self.dataset_size, self.fc_width))
                 if self.to_log(3):
@@ -533,6 +466,80 @@ class Model:
                         pre_lid_features_per_element[batch[2]] = self.pre_lid_layer_op.eval(feed_dict=feed_dict)
                     if self.to_log(4):
                         logits_per_element[batch[2]] = self.logits.eval(feed_dict=feed_dict)
+
+                if self.update_mode == 3:
+                    #
+                    # COMPUTE LDA PARAMETERS
+                    #
+
+                    print('Computing LDA parameters')
+
+                    features = np.empty((self.dataset_size, self.fc_width))
+                    for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE, False):
+                        feed_dict = {self.nn_input: batch[0], self.is_training: False}
+                        features[batch[2]] = self.feature_layer.eval(feed_dict=feed_dict)
+
+                    # initially select random subset of samples
+                    keep_arr = np.random.binomial(1, 0.5, self.dataset_size).astype(bool)
+                    for i in range(3 + 1):
+                        sess.run(self.reset_class_feature_sums_counts_and_covariance_op)
+
+                        # compute class feature means
+                        for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
+                            feed_dict = {self.features_pl: features[batch[2]],
+                                         self.y_: batch[1],
+                                         self.class_feature_ops_keep_array_pl: keep_arr[batch[2]]}
+                            sess.run(self.update_class_features_sum_and_counts_op, feed_dict=feed_dict)
+
+                        counts = self.class_feature_counts_var.eval(sess)
+                        sums = self.class_feature_sums_var.eval(sess)
+
+                        self.class_feature_means = sums / counts.reshape((-1, 1))
+
+                        # compute class feature covariance matrices
+                        for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
+                            feed_dict = {self.features_pl: features[batch[2]], self.y_: batch[1],
+                                         self.class_feature_means_pl: self.class_feature_means,
+                                         self.class_feature_ops_keep_array_pl: keep_arr[batch[2]]}
+                            sess.run(self.update_class_covariances_op, feed_dict=feed_dict)
+
+                        class_covariance_sums = self.class_covariance_sums_var.eval(sess)
+                        class_covariances = class_covariance_sums / counts.reshape((-1, 1, 1)) +\
+                                            np.eye(self.fc_width, self.fc_width) * EPS
+                        class_inv_covariances = np.array([np.linalg.inv(it) for it in class_covariances])
+
+                        print('covariance determinants per class:',
+                              [np.linalg.det(it) for it in class_covariances])
+                        print('min covariance eigenvalues per class:',
+                              [np.linalg.svd(it)[1][-1] for it in class_covariances])
+
+                        # compute tied covariance matrix
+                        covariance = np.sum(class_covariance_sums, 0) / np.sum(counts) +\
+                                     np.eye(self.fc_width, self.fc_width) * EPS
+                        self.inv_covariance = np.linalg.inv(covariance)
+
+                        print('tied covariance determinant:',
+                              np.linalg.det(covariance))
+                        print('min tied covariance eigenvalue:',
+                              np.linalg.svd(covariance)[1][-1])
+
+                        # compute Mahalanobis distance based anomaly scores
+                        mahalanobis_distances = np.empty(self.dataset_size)
+                        for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
+                            feed_dict = {self.features_pl: features[batch[2]],
+                                         self.class_feature_means_pl: self.class_feature_means,
+                                         self.class_inv_covariances_pl: class_inv_covariances,
+                                         self.y_: batch[1]}
+                            mah_dists = sess.run(self.mahalanobis_dist_calc, feed_dict=feed_dict)
+                            mahalanobis_distances[batch[2]] = mah_dists
+
+                        mahalanobis_distances_per_class = [np.take(mahalanobis_distances, Y_ind_per_class[c]) for c in range(N_CLASSES)]
+
+                        # select less anomalous samples for the next subset
+                        medians = np.array([np.quantile(arr, 0.5) for arr in mahalanobis_distances_per_class])
+                        print('Mahalanobis distance medians per class', [round(it**0.5, 1) for it in medians])
+
+                        keep_arr = mahalanobis_distances < np.take(medians, Y_ind)
 
                 if self.update_mode == 1 or self.to_log(0):
                     #
