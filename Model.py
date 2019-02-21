@@ -72,11 +72,11 @@ class Model:
         #
 
         self.data_augmenter = None
-        # if self.dataset_name == 'cifar-10':
-        #     self.data_augmenter = tf.keras.preprocessing.image.ImageDataGenerator(
-        #         width_shift_range=0.2,
-        #         height_shift_range=0.2,
-        #         horizontal_flip=True)
+        if self.dataset_name == 'cifar-10':
+            self.data_augmenter = tf.keras.preprocessing.image.ImageDataGenerator(
+                width_shift_range=0.2,
+                height_shift_range=0.2,
+                horizontal_flip=True)
 
         #
         # BUILD NETWORK
@@ -186,8 +186,9 @@ class Model:
                     self.modified_labels_op = tf.identity(
                         self.alpha_var * self.y_ + (1 - self.alpha_var.value()) * tf.one_hot(tf.argmax(self.logits, 1), 10),
                         name='modified_labels')
-                    cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.modified_labels_op,
-                                                                               logits=self.logits)
+                    cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(
+                        labels=tf.stop_gradient(self.modified_labels_op),
+                        logits=self.logits)
             if self.update_mode == 2:
                 self.modified_labels_op = get_new_label_op(self.features_to_means_dist_op, self.y_, self.logits)
                 self.use_modified_labels_pl = tf.placeholder(tf.bool)
@@ -206,8 +207,10 @@ class Model:
                     labels=self.modified_labels_op,
                     logits=self.logits)
 
+            self.reg_loss = 0
             if self.dataset_name == 'cifar-10':
-                cross_entropy += self.reg_coef * (W_l2_reg_sum + b_l2_reg_sum)
+                self.reg_loss = self.reg_coef * (W_l2_reg_sum + b_l2_reg_sum)
+            cross_entropy += self.reg_loss
 
         self.cross_entropy = tf.reduce_mean(cross_entropy)
 
@@ -274,6 +277,7 @@ class Model:
 
         tf.summary.scalar(name='cross_entropy', tensor=self.cross_entropy)
         tf.summary.scalar(name='train_accuracy', tensor=self.accuracy)
+        tf.summary.scalar(name='reg_loss', tensor=self.reg_loss)
         tf.summary.scalar(name='modified_train_accuracy', tensor=self.modified_accuracy)
         summary = tf.summary.merge_all()
 
@@ -310,8 +314,6 @@ class Model:
             pre_lid_features_per_epoch_per_element = np.empty((0, self.dataset_size, self.fc_width))
         if self.to_log(4):
             logits_per_epoch_per_element = np.empty((0, self.dataset_size, N_CLASSES))
-
-        lda_features_per_epoch = np.empty((0, self.dataset_size, self.fc_width))
 
         #
         # SESSION START
@@ -459,6 +461,7 @@ class Model:
                 if self.to_log(4):
                     logits_per_element = np.empty((self.dataset_size, N_CLASSES))
 
+                features = np.empty((self.dataset_size, self.fc_width))
                 for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE, False):
                     feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: False}
                     if self.to_log(2):
@@ -467,6 +470,8 @@ class Model:
                         pre_lid_features_per_element[batch[2]] = self.pre_lid_layer_op.eval(feed_dict=feed_dict)
                     if self.to_log(4):
                         logits_per_element[batch[2]] = self.logits.eval(feed_dict=feed_dict)
+
+                    features[batch[2]] = self.pre_lid_layer_op.eval(feed_dict=feed_dict)
 
                 if self.update_mode == 3:
                     #
@@ -675,19 +680,6 @@ class Model:
                 features_op = graph.get_tensor_by_name('fc1/pre_lid_input:0')
             else:
                 features_op = graph.get_tensor_by_name('fc1/lid_input:0')
-            pre_bn = graph.get_tensor_by_name('fc1/add:0')
-            w_var = graph.get_tensor_by_name('fc1/Variable:0')
-            b_var = graph.get_tensor_by_name('fc1/Variable_1:0')
-
-            w = w_var.eval({}, sess)
-            b = b_var.eval({}, sess)
-            print(np.linalg.norm(w), np.linalg.norm(b))
-            print(np.mean(w), np.mean(b))
-            print(scipy.stats.kurtosis(w.reshape(-1)), scipy.stats.kurtosis(b.reshape(-1)))
-            print(list(b))
-            for it in w:
-                print(list(np.round(it, 10)))
-            exit(0)
 
             X, Y = read_dataset(name=dataset_name, type=dataset_type)
 

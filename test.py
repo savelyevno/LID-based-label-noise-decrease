@@ -1528,7 +1528,7 @@ def test_mean_and_covariance():
         neq = []
         for j in range(d):
             x = features[i_epoch, :, j]
-            if np.sum(np.abs(x - x[0])) < 1e-6:
+            if np.sum(np.abs(x - x[0])) < 1e-9:
                 # print(j)
                 neq.append(j)
         print(len(neq), neq)
