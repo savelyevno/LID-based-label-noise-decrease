@@ -1585,6 +1585,24 @@ def test_mean_and_covariance():
         print(np.median(mah))
 
 
+def test_softmax_comb():
+    def softmax(x, w=None):
+        if w is None:
+            w = np.ones(len(x))
+        sm = np.sum(np.exp(x) * w)
+        return (np.exp(x) * w) / sm
+
+    x1 = np.array([-5, 0, 4, 3])
+    x2 = np.array([2, 0, 1, 1])
+
+    p1 = softmax(x1)
+    p2 = softmax(x2)
+
+    print((p1+p2)/2)
+
+    print(softmax((x1+x2)/2))
+    print(softmax((np.exp(-x1) + np.exp(-x2))/2))
+
 
 if __name__ == '__main__':
     # test_single_epoch(20)
@@ -1604,4 +1622,5 @@ if __name__ == '__main__':
     # test_mean_distances_change()
     # test_distance_to_first()
     # test_logits_accuracy()
-    test_mean_and_covariance()
+    # test_mean_and_covariance()
+    test_softmax_comb()

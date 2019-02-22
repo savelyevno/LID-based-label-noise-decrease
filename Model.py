@@ -17,7 +17,7 @@ from tools import bitmask_contains
 
 class Model:
     def __init__(self, dataset_name, model_name, update_mode, update_param, update_submode=0, update_subsubmode=0,
-                 log_mask=0, reg_coef=5e-4):
+                 log_mask=0, reg_coef=5e-4, n_blocks=1):
         """
 
         :param dataset_name:         dataset name: mnist/cifar-10
@@ -49,6 +49,7 @@ class Model:
         self.log_mask = log_mask
         self.model_name = model_name
         self.reg_coef = reg_coef
+        self.n_blocks = n_blocks
 
         self.fc_width = FC_WIDTH[dataset_name]
         self.dataset_size = DATASET_SIZE[dataset_name]
@@ -83,7 +84,9 @@ class Model:
         #
 
         if self.dataset_name == 'mnist':
-            self.pre_lid_layer_op, self.lid_layer_op, self.logits = build_mnist(self.nn_input, self.is_training)
+            self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds = build_mnist(self.nn_input,
+                                                                                            self.is_training,
+                                                                                            self.n_blocks)
         elif self.dataset_name == 'cifar-10':
             self.pre_lid_layer_op, self.lid_layer_op, self.logits, W_l2_reg_sum, b_l2_reg_sum = build_cifar_10(
                 self.nn_input, self.is_training)
@@ -184,7 +187,7 @@ class Model:
 
                 if self.update_mode == 1:
                     self.modified_labels_op = tf.identity(
-                        self.alpha_var * self.y_ + (1 - self.alpha_var.value()) * tf.one_hot(tf.argmax(self.logits, 1), 10),
+                        self.alpha_var * self.y_ + (1 - self.alpha_var.value()) * tf.one_hot(tf.argmax(self.preds, 1), 10),
                         name='modified_labels')
                     cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(
                         labels=tf.stop_gradient(self.modified_labels_op),
@@ -219,7 +222,7 @@ class Model:
         #
 
         with tf.name_scope('accuracy'):
-            correct_prediction = tf.equal(tf.argmax(self.logits, 1), tf.argmax(self.y_, 1))
+            correct_prediction = tf.equal(tf.argmax(self.preds, 1), tf.argmax(self.y_, 1))
             correct_prediction = tf.cast(correct_prediction, tf.float32)
             self.accuracy = tf.reduce_mean(correct_prediction, name='accuracy')
 
@@ -234,7 +237,7 @@ class Model:
             elif self.update_mode == 3:
                 new_label = self.modified_labels_op
 
-            acc = tf.reduce_sum(tf.one_hot(tf.argmax(self.logits, 1), self.logits.shape[1]) * new_label, 1)
+            acc = tf.reduce_sum(tf.one_hot(tf.argmax(self.preds, 1), N_CLASSES) * new_label, 1)
             self.modified_accuracy = tf.reduce_mean(acc, name='accuracy')
 
     def train(self, train_dataset_type='train'):
@@ -256,12 +259,12 @@ class Model:
 
         with tf.name_scope('learning_rate'):
             if self.dataset_name == 'mnist':
-                # self.lr = tf.cond(self.epoch_pl > 40, lambda: 1e-3,
-                #                   lambda: tf.cond(self.epoch_pl > 20, lambda: 1e-2,
-                #                                   lambda: 1e-1)) * 1e-3
+                self.lr = tf.cond(self.epoch_pl > 80, lambda: 1e-3,
+                                  lambda: tf.cond(self.epoch_pl > 40, lambda: 1e-2,
+                                                  lambda: 1e-1)) * 1e-3
                 # self.lr = tf.cond(self.epoch_pl > 30, lambda: 1e-6,
                 #                                      lambda: 1e-5)
-                self.lr = tf.cond(self.epoch_pl > 40, lambda: 1e-5, lambda: 1e-4)
+                # self.lr = tf.cond(self.epoch_pl > 40, lambda: 1e-5, lambda: 1e-4)
                 # self.lr = 1e-6
             elif self.dataset_name == 'cifar-10':
                 self.lr = tf.cond(self.epoch_pl > 80, lambda: 1e-3,
@@ -461,17 +464,15 @@ class Model:
                 if self.to_log(4):
                     logits_per_element = np.empty((self.dataset_size, N_CLASSES))
 
-                features = np.empty((self.dataset_size, self.fc_width))
-                for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE, False):
-                    feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: False}
-                    if self.to_log(2):
-                        lid_features_per_element[batch[2]] = self.lid_layer_op.eval(feed_dict=feed_dict)
-                    if self.to_log(3):
-                        pre_lid_features_per_element[batch[2]] = self.pre_lid_layer_op.eval(feed_dict=feed_dict)
-                    if self.to_log(4):
-                        logits_per_element[batch[2]] = self.logits.eval(feed_dict=feed_dict)
-
-                    features[batch[2]] = self.pre_lid_layer_op.eval(feed_dict=feed_dict)
+                if self.to_log(2) or self.to_log(3) or self.to_log(4):
+                    for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE, False):
+                        feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: False}
+                        if self.to_log(2):
+                            lid_features_per_element[batch[2]] = self.lid_layer_op.eval(feed_dict=feed_dict)
+                        if self.to_log(3):
+                            pre_lid_features_per_element[batch[2]] = self.pre_lid_layer_op.eval(feed_dict=feed_dict)
+                        if self.to_log(4):
+                            logits_per_element[batch[2]] = self.logits.eval(feed_dict=feed_dict)
 
                 if self.update_mode == 3:
                     #
