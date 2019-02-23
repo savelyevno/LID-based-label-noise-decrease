@@ -10,6 +10,6 @@ EPOCH_WINDOW = 5
 
 EPS = 1e-12
 
-FC_WIDTH = {'mnist': 16, 'cifar-10': 256}
+FC_WIDTH = {'mnist': 16, 'cifar-10': 32}
 
 # LID_SAMPLE_SET_SIZE = {'mnist': 60000}

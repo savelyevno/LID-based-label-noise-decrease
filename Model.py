@@ -88,8 +88,9 @@ class Model:
                                                                                             self.is_training,
                                                                                             self.n_blocks)
         elif self.dataset_name == 'cifar-10':
-            self.pre_lid_layer_op, self.lid_layer_op, self.logits, W_l2_reg_sum, b_l2_reg_sum = build_cifar_10(
-                self.nn_input, self.is_training)
+            self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds = build_cifar_10(self.nn_input,
+                                                                                               self.is_training,
+                                                                                               self.n_blocks)
 
         #
         # PREPARE FOR LABEL CHANGING
@@ -211,8 +212,6 @@ class Model:
                     logits=self.logits)
 
             self.reg_loss = 0
-            if self.dataset_name == 'cifar-10':
-                self.reg_loss = self.reg_coef * (W_l2_reg_sum + b_l2_reg_sum)
             cross_entropy += self.reg_loss
 
         self.cross_entropy = tf.reduce_mean(cross_entropy)
