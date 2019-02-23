@@ -6,17 +6,18 @@ if __name__ == '__main__':
     # full_test('model')
     # test_image('testSample/img_3.jpg')
 
-    model_name = 'none_clean_lr_times_1e-1_2_block32'
+    model_name = '20_lda_ep120_4blk32'
     print(model_name)
-    model = Model(dataset_name='cifar-10', model_name=model_name, n_blocks=2,
-                  update_mode=0, update_param=5, update_submode=0, update_subsubmode=0, reg_coef=0,
+    model = Model(dataset_name='cifar-10', model_name=model_name, n_blocks=4, n_epochs=120,
+                  lr_segments=[(0.33, 1e-2), (0.33, 1e-3), (0.33, 1e-4)],
+                  update_mode=3, update_param=5, update_submode=0, update_subsubmode=0,
                   log_mask=1 * (1 << 0) +
                            0 * (1 << 1) +
                            0 * (1 << 2) +
                            0 * (1 << 3) +
                            0 * (1 << 4)
                   )
-    model.train('train')
+    model.train('train20')
 
     # model_name = 'clean_none_lr_times_1e-3_4_block16'
     # # model_name = 'clean_paper_lr_1e-5_30_1e-6'

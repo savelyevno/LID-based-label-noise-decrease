@@ -1593,15 +1593,18 @@ def test_softmax_comb():
         return (np.exp(x) * w) / sm
 
     x1 = np.array([-5, 0, 4, 3])
-    x2 = np.array([2, 0, 1, 1])
+    x2 = np.array([4, 0, 1, 1])
 
     p1 = softmax(x1)
     p2 = softmax(x2)
 
-    print((p1+p2)/2)
+    x3 = np.log((p1+p2)/2)
 
-    print(softmax((x1+x2)/2))
-    print(softmax((np.exp(-x1) + np.exp(-x2))/2))
+    p3 = softmax(x3)
+
+    print((p1+p2)/2)
+    print(p3)
+
 
 
 if __name__ == '__main__':

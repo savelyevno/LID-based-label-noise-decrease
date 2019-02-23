@@ -16,8 +16,9 @@ from tools import bitmask_contains, softmax
 
 
 class Model:
-    def __init__(self, dataset_name, model_name, update_mode, update_param, update_submode=0, update_subsubmode=0,
-                 log_mask=0, reg_coef=5e-4, n_blocks=1):
+    def __init__(self, dataset_name, model_name, update_mode, update_param, n_epochs, lr_segments=None,
+                 update_submode=0, update_subsubmode=0,
+                 log_mask=0, n_blocks=1):
         """
 
         :param dataset_name:         dataset name: mnist/cifar-10
@@ -48,10 +49,11 @@ class Model:
         self.update_subsubmode = update_subsubmode
         self.log_mask = log_mask
         self.model_name = model_name
-        self.reg_coef = reg_coef
         self.n_blocks = n_blocks
+        self.n_epochs = n_epochs
+        self.lr_segments = lr_segments
 
-        self.fc_width = FC_WIDTH[dataset_name]
+        self.fc_width = FC_WIDTH[dataset_name] * n_blocks
         self.dataset_size = DATASET_SIZE[dataset_name]
 
     def _build(self):
@@ -257,18 +259,16 @@ class Model:
         self.epoch_pl = tf.placeholder(tf.int32)
 
         with tf.name_scope('learning_rate'):
-            if self.dataset_name == 'mnist':
-                self.lr = tf.cond(self.epoch_pl > 80, lambda: 1e-3,
-                                  lambda: tf.cond(self.epoch_pl > 40, lambda: 1e-2,
-                                                  lambda: 1e-1)) * 1e-3
-                # self.lr = tf.cond(self.epoch_pl > 30, lambda: 1e-6,
-                #                                      lambda: 1e-5)
-                # self.lr = tf.cond(self.epoch_pl > 40, lambda: 1e-5, lambda: 1e-4)
-                # self.lr = 1e-6
-            elif self.dataset_name == 'cifar-10':
-                self.lr = tf.cond(self.epoch_pl > 80, lambda: 1e-3,
-                                  lambda: tf.cond(self.epoch_pl > 40, lambda: 1e-2,
-                                                  lambda: 1e-1)) * 1e-1
+            def produce_lr_tensor(segment_start=0, segment_i=1):
+                if segment_i == len(self.lr_segments):
+                    return self.lr_segments[-1][1]
+                else:
+                    segment_end = segment_start + self.lr_segments[segment_i - 1][0]
+                    return tf.cond(pred=tf.cast(self.epoch_pl, tf.float32) < segment_end * self.n_epochs,
+                                   true_fn=lambda: self.lr_segments[segment_i - 1][1],
+                                   false_fn=lambda: produce_lr_tensor(segment_end, segment_i + 1))
+
+            self.lr = produce_lr_tensor()
 
         with tf.name_scope('adam_optimizer'):
             train_step = tf.train.AdamOptimizer(self.lr).minimize(self.cross_entropy)
@@ -281,6 +281,7 @@ class Model:
         tf.summary.scalar(name='train_accuracy', tensor=self.accuracy)
         tf.summary.scalar(name='reg_loss', tensor=self.reg_loss)
         tf.summary.scalar(name='modified_train_accuracy', tensor=self.modified_accuracy)
+        tf.summary.scalar(name='learning_rate', tensor=self.lr)
         summary = tf.summary.merge_all()
 
         test_accuracy_summary_scalar = tf.placeholder(tf.float32)
@@ -371,14 +372,14 @@ class Model:
             turning_epoch = -1  # number of epoch where we turn from regular loss function to the modified one
 
             i_step = -1
-            for i_epoch in range(1, N_EPOCHS + 1):
+            for i_epoch in range(1, self.n_epochs + 1):
                 timer.start()
 
                 def use_modified_labels():
                     return i_epoch >= self.update_param
 
                 print('___________________________________________________________________________')
-                print('\nSTARTING EPOCH %d\n' % (i_epoch,))
+                print('\nSTARTING EPOCH %d, learning rate: %g\n' % (i_epoch, self.lr.eval({self.epoch_pl: i_epoch})))
 
                 if X_augmented_iter is not None:
                     print('Augmenting data...')
@@ -581,7 +582,7 @@ class Model:
                     #
 
                     if turning_epoch != -1:
-                        new_alpha_value = np.exp(-(i_epoch / N_EPOCHS) * (lid_per_epoch[-1] / lid_per_epoch[:-1].min()))
+                        new_alpha_value = np.exp(-(i_epoch / self.n_epochs) * (lid_per_epoch[-1] / lid_per_epoch[:-1].min()))
                         print('\nnew alpha value:', new_alpha_value)
                     else:
                         new_alpha_value = 1

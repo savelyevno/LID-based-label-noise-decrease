@@ -1,5 +1,5 @@
 DATASET_SIZE = {'mnist': 60000, 'cifar-10': 50000}
-N_EPOCHS = 120
+# N_EPOCHS = 120
 BATCH_SIZE = 128
 N_CLASSES = 10
 
