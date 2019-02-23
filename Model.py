@@ -12,7 +12,7 @@ from consts import *
 from Timer import timer
 from preprocessing import read_dataset
 from batch_iterate import batch_iterator, batch_iterator_with_indices
-from tools import bitmask_contains
+from tools import bitmask_contains, softmax
 
 
 class Model:
@@ -694,6 +694,64 @@ class Model:
                 np.save('pre_lid_features/' + dataset_name + '/' + model_name + '_' + dataset_type, np.expand_dims(features, 0))
             else:
                 np.save('lid_features/' + dataset_name + '/' + model_name + '_' + dataset_type, np.expand_dims(features, 0))
+
+    @staticmethod
+    def compute_block_features(dataset_name, model_name, epoch, dataset_type, n_blocks):
+        with tf.Session() as sess:
+            full_model_name = 'checkpoints/' + dataset_name + '/' + model_name + '/' + str(epoch)
+            saver = tf.train.import_meta_graph(full_model_name + '.meta')
+            saver.restore(sess, full_model_name)
+
+            graph = tf.get_default_graph()
+
+            x = graph.get_tensor_by_name('x:0')
+            y_ = graph.get_tensor_by_name('y_:0')
+            is_training = graph.get_tensor_by_name('is_training:0')
+            # accuracy_op = graph.get_tensor_by_name('accuracy:0')
+            block_features_ops = []
+            block_logit_ops = []
+            for i in range(n_blocks):
+                block_features_ops.append(graph.get_tensor_by_name('fc1/bn_' + str(i + 1) + ':0'))
+                block_logit_ops.append(graph.get_tensor_by_name('fc2/logits_' + str(i + 1) + ':0'))
+
+            n_dims = block_features_ops[0].shape[1]
+
+            X, Y = read_dataset(name=dataset_name, type=dataset_type)
+
+            def list_round(arr, d=2):
+                from collections.abc import Iterable
+
+                res = ''
+                if isinstance(arr[0], Iterable):
+                    for it in arr:
+                        res += list_round(it, d) + '\n'
+                else:
+                    return str(list(np.round(arr, d)))
+
+                return res
+
+            for batch in batch_iterator_with_indices(X, Y, 1):
+                # for i in range(n_blocks):
+                #     features = block_features_ops[i].eval({x: batch[0], is_training: False})
+                #     for j in range(batch_size):
+                #         print(list_round(features[j]))
+                block_preds = []
+                for i in range(n_blocks):
+                    logits = block_logit_ops[i].eval({x: batch[0], is_training: False})
+                    preds = softmax(logits[0])
+                    block_preds.append(preds)
+                    # print(list_round(logits[j]), list_round(preds))
+                    # print(list_round(preds))
+
+                preds_co_acc = np.zeros((n_blocks, n_blocks))
+                for i in range(n_blocks):
+                    for j in range(n_blocks):
+                        preds_co_acc[i, j] = np.dot(block_preds[i], block_preds[j])
+                print(list_round(preds_co_acc))
+
+                print('\n\n')
+
+
 
     @staticmethod
     def test(dataset_name, model_name, epoch):
