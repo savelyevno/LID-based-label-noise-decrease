@@ -2,7 +2,7 @@ import tensorflow as tf
 from tensorflow.python.ops import control_flow_ops
 import numpy as np
 
-from consts import FC_WIDTH, N_CLASSES
+from consts import N_CLASSES
 
 
 def conv2d(x, W):
@@ -70,7 +70,7 @@ def batch_norm(input_tnsr, is_training):
     return normed
 
 
-def build_mnist(x, is_training, n_blocks):
+def build_mnist(x, is_training, n_blocks, block_width):
     batch_size = tf.shape(x)[0]
 
     # Reshape to use within a convolutional neural net.
@@ -113,15 +113,15 @@ def build_mnist(x, is_training, n_blocks):
         hs_fc1 = []
         acts_fc1 = []
         for i in range(n_blocks):
-            Ws_fc1.append(weight_variable([7 * 7 * 64, FC_WIDTH['mnist']], 'W_' + str(i + 1)))
-            bs_fc1.append(bias_variable([FC_WIDTH['mnist']], 'b_' + str(i + 1)))
+            Ws_fc1.append(weight_variable([7 * 7 * 64, block_width], 'W_' + str(i + 1)))
+            bs_fc1.append(bias_variable([block_width], 'b_' + str(i + 1)))
             h = tf.matmul(h_pool2_flat, Ws_fc1[i]) + bs_fc1[i]
             bn_h = tf.identity(batch_norm(h, is_training), name='bn_' + str(i + 1))
             hs_fc1.append(bn_h)
             a = tf.nn.relu(bn_h, name='relu_' + str(i + 1))
             acts_fc1.append(a)
 
-        h_fc1 = tf.reshape(tf.stack(hs_fc1, 1), (-1, FC_WIDTH['mnist'] * n_blocks), name='pre_lid_input')
+        h_fc1 = tf.reshape(tf.stack(hs_fc1, 1), (-1, block_width * n_blocks), name='pre_lid_input')
         a_fc1 = tf.nn.relu(h_fc1, name='lid_input')
 
     Ws_fc2 = []
@@ -131,7 +131,7 @@ def build_mnist(x, is_training, n_blocks):
     # Map the 1024 lid_features to 10 classes, one for each digit
     with tf.name_scope('fc2'):
         for i in range(n_blocks):
-            Ws_fc2.append(weight_variable([FC_WIDTH['mnist'], N_CLASSES], 'W_' + str(i + 1)))
+            Ws_fc2.append(weight_variable([block_width, N_CLASSES], 'W_' + str(i + 1)))
             bs_fc2.append(bias_variable([N_CLASSES], 'b_' + str(i + 1)))
             logits_fc2.append(tf.identity(tf.matmul(acts_fc1[i], Ws_fc2[i]) + bs_fc2[i], 'logits_' + str(i + 1)))
 
@@ -146,7 +146,7 @@ def build_mnist(x, is_training, n_blocks):
     return h_fc1, a_fc1, logits, preds
 
 
-def build_cifar_10(x, is_training, n_blocks):
+def build_cifar_10(x, is_training, n_blocks, block_width):
     batch_size = tf.shape(x)[0]
 
     # Block 1
@@ -212,15 +212,15 @@ def build_cifar_10(x, is_training, n_blocks):
         hs_fc1 = []
         acts_fc1 = []
         for i in range(n_blocks):
-            Ws_fc1.append(weight_variable([4 * 4 * 196, FC_WIDTH['cifar-10']], 'W_' + str(i + 1)))
-            bs_fc1.append(bias_variable([FC_WIDTH['cifar-10']], 'b_' + str(i + 1)))
+            Ws_fc1.append(weight_variable([4 * 4 * 196, block_width], 'W_' + str(i + 1)))
+            bs_fc1.append(bias_variable([block_width], 'b_' + str(i + 1)))
             h = tf.matmul(h_flattened, Ws_fc1[i]) + bs_fc1[i]
             bn_h = tf.identity(batch_norm(h, is_training), name='bn_' + str(i + 1))
             hs_fc1.append(bn_h)
             a = tf.nn.relu(bn_h, name='relu_' + str(i + 1))
             acts_fc1.append(a)
 
-        h_fc1 = tf.reshape(tf.stack(hs_fc1, 1), (-1, FC_WIDTH['cifar-10'] * n_blocks), name='pre_lid_input')
+        h_fc1 = tf.reshape(tf.stack(hs_fc1, 1), (-1, block_width * n_blocks), name='pre_lid_input')
         a_fc1 = tf.nn.relu(h_fc1, name='lid_input')
 
     Ws_fc2 = []
@@ -230,7 +230,7 @@ def build_cifar_10(x, is_training, n_blocks):
     # Map the 1024 lid_features to 10 classes, one for each digit
     with tf.name_scope('fc2'):
         for i in range(n_blocks):
-            Ws_fc2.append(weight_variable([FC_WIDTH['cifar-10'], N_CLASSES], 'W_' + str(i + 1)))
+            Ws_fc2.append(weight_variable([block_width, N_CLASSES], 'W_' + str(i + 1)))
             bs_fc2.append(bias_variable([N_CLASSES], 'b_' + str(i + 1)))
             logits_fc2.append(tf.identity(tf.matmul(acts_fc1[i], Ws_fc2[i]) + bs_fc2[i], 'logits_' + str(i + 1)))
 

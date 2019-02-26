@@ -204,35 +204,43 @@ def get_update_class_covariances_selective_sum_op(class_covariance_sums, class_f
     return result_op
 
 
-def get_LDA_logits_calc_op(class_feature_means, inv_covariance_matrix, features, class_priors):
-    n_classes = class_feature_means.shape[0]
-    n_dims = class_feature_means.shape[1]
+def get_LDA_logits_calc_op(block_class_feature_means, block_inv_covariance_matrix, features, class_priors):
+    n_blocks = block_class_feature_means.shape[0]
+    n_classes = block_class_feature_means.shape[1]
+    n_dims = block_class_feature_means.shape[2]
     batch_size = tf.shape(features)[0]
 
     means_reshaped = tf.tile(
-        input=tf.reshape(class_feature_means, (1, n_classes, n_dims, 1)),
-        multiples=[batch_size, 1, 1, 1])
-    means_reshaped_T = tf.reshape(means_reshaped, (batch_size, n_classes, 1, n_dims))
+        input=tf.reshape(block_class_feature_means, (1, n_blocks, n_classes, n_dims, 1)),
+        multiples=[batch_size, 1, 1, 1, 1])
+    means_reshaped_T = tf.reshape(means_reshaped, (batch_size, n_blocks, n_classes, 1, n_dims))
 
     features_reshaped = tf.tile(
-        input=tf.reshape(features, (batch_size, 1, n_dims, 1)),
-        multiples=[1, n_classes, 1, 1])
+        input=tf.reshape(features, (batch_size, n_blocks, 1, n_dims, 1)),
+        multiples=[1, 1, n_classes, 1, 1])
 
     inv_covariance_matrix_reshaped = tf.tile(
-        input=tf.reshape(inv_covariance_matrix, (1, 1, n_dims, n_dims)),
-        multiples=[batch_size, n_classes, 1, 1])
+        input=tf.reshape(block_inv_covariance_matrix, (1, n_blocks, 1, n_dims, n_dims)),
+        multiples=[batch_size, 1, n_classes, 1, 1])
 
     class_priors_reshaped = tf.tile(
-        input=tf.reshape(class_priors, (1, n_classes, 1, 1)),
-        multiples=[batch_size, 1, 1, 1])
+        input=tf.reshape(class_priors, (1, 1, n_classes, 1, 1)),
+        multiples=[batch_size, n_blocks, 1, 1, 1])
 
     sm1 = tf.matmul(means_reshaped_T, tf.matmul(inv_covariance_matrix_reshaped, features_reshaped))
     sm2 = 0.5 * tf.matmul(means_reshaped_T, tf.matmul(inv_covariance_matrix_reshaped, means_reshaped))
     sm3 = tf.log(class_priors_reshaped)
 
-    logits = tf.reshape(sm1 - sm2 + sm3, (-1, n_classes))
+    logits = tf.reshape(sm1 - sm2 + sm3, (-1, n_blocks, n_classes))
 
     return logits
+
+
+def get_LDA_based_labels_calc_op(LDA_logits):
+    block_predictions = tf.nn.softmax(LDA_logits)
+    predictions = tf.reduce_mean(block_predictions, 1)
+
+    return predictions
 
 
 def get_Mahalanobis_distance_calc_op(class_feature_means, class_inv_covariances, features, labels_one_hot):

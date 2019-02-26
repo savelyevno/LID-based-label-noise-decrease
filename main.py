@@ -8,9 +8,11 @@ if __name__ == '__main__':
 
     model_name = '20_lda_ep120_4blk32'
     print(model_name)
-    model = Model(dataset_name='cifar-10', model_name=model_name, n_blocks=4, n_epochs=120,
+    model = Model(dataset_name='cifar-10', model_name=model_name,
+                  n_epochs=120, n_blocks=4, block_width=32,
                   lr_segments=[(0.33, 1e-2), (0.33, 1e-3), (0.33, 1e-4)],
-                  update_mode=3, update_param=5, update_submode=0, update_subsubmode=0,
+                  # lr_segments=[(0.3, 1e-4), (0.3, 1e-5), (0.4, 1e-6)],
+                  update_mode=3, update_param=3, update_submode=0, update_subsubmode=0,
                   log_mask=1 * (1 << 0) +
                            0 * (1 << 1) +
                            0 * (1 << 2) +
