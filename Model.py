@@ -19,7 +19,8 @@ from tools import bitmask_contains, softmax
 class Model:
     def __init__(self, dataset_name, model_name, update_mode, update_param, n_epochs, lr_segments=None,
                  update_submode=0, update_subsubmode=0,
-                 log_mask=0, n_blocks=1, block_width=256):
+                 log_mask=0, n_blocks=1, block_width=256,
+                 n_epochs_to_transition=None):
         """
 
         :param dataset_name:         dataset name: mnist/cifar-10
@@ -53,6 +54,7 @@ class Model:
         self.n_blocks = n_blocks
         self.n_epochs = n_epochs
         self.lr_segments = lr_segments
+        self.n_epochs_to_transition = n_epochs_to_transition
 
         self.block_width = block_width
         self.total_hidden_width = block_width * n_blocks
@@ -68,7 +70,7 @@ class Model:
         elif self.dataset_name == 'cifar-10':
             self.nn_input = tf.placeholder(tf.float32, [None, 32, 32, 3], name='x')
 
-        self.y_ = tf.placeholder(tf.float32, [None, N_CLASSES], name='y_')
+        self.dataset_noised_labels_pl = tf.placeholder(tf.float32, [None, N_CLASSES], name='y_')
 
         self.is_training = tf.placeholder(dtype=tf.bool, name='is_training')
 
@@ -122,7 +124,7 @@ class Model:
 
             self.update_class_features_sum_and_counts_op = get_update_class_features_sum_and_counts_op_logits(
                 self.class_feature_sums_var, self.class_feature_counts_var,
-                used_lid_layer, self.logits, self.y_)
+                used_lid_layer, self.logits, self.dataset_noised_labels_pl)
 
             self.reset_class_feature_sums_and_counts_op = tf.group(
                 tf.assign(self.class_feature_sums_var, tf.zeros((N_CLASSES, self.total_hidden_width))),
@@ -154,13 +156,13 @@ class Model:
             self.class_feature_ops_keep_array_pl = tf.placeholder(tf.bool, (None,))
 
             self.update_class_features_sum_and_counts_op = get_update_class_feature_selective_sum_and_counts_op(
-                self.class_feature_sums_var, self.class_feature_counts_var, self.features_pl, self.y_,
+                self.class_feature_sums_var, self.class_feature_counts_var, self.features_pl, self.dataset_noised_labels_pl,
                 self.class_feature_ops_keep_array_pl)
 
             self.class_feature_means_pl = tf.placeholder(tf.float32, (N_CLASSES, self.block_width))
 
             self.update_class_covariances_op = get_update_class_covariances_selective_sum_op(
-                self.class_covariance_sums_var, self.class_feature_means_pl, self.features_pl, self.y_,
+                self.class_covariance_sums_var, self.class_feature_means_pl, self.features_pl, self.dataset_noised_labels_pl,
                 self.class_feature_ops_keep_array_pl)
 
             self.reset_class_feature_sums_counts_and_covariance_op = tf.group(
@@ -173,7 +175,7 @@ class Model:
 
             self.mahalanobis_dist_calc = get_Mahalanobis_distance_calc_op(self.class_feature_means_pl,
                                                                           self.class_inv_covariances_pl,
-                                                                          self.features_pl, self.y_)
+                                                                          self.features_pl, self.dataset_noised_labels_pl)
 
             self.block_class_feature_means_pl = tf.placeholder(tf.float32, (self.n_blocks, N_CLASSES, self.block_width))
             self.block_inv_covariance_pl = tf.placeholder(tf.float32, (self.n_blocks, self.block_width, self.block_width))
@@ -189,35 +191,36 @@ class Model:
 
         with tf.name_scope('loss'):
             if self.update_mode == 0:
-                self.modified_labels_op = self.y_
-                cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.y_,
+                self.new_labels_op = self.dataset_noised_labels_pl
+                self.modified_labels_op = self.dataset_noised_labels_pl
+                cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.dataset_noised_labels_pl,
                                                                            logits=self.logits)
             if self.update_mode == 1 or self.to_log(0):
                 self.alpha_var = tf.Variable(1, False, dtype=tf.float32, name='alpha')
 
                 if self.update_mode == 1:
-                    self.new_labels = tf.one_hot(tf.argmax(self.preds, 1), 10)
+                    self.new_labels_op = tf.one_hot(tf.argmax(self.preds, 1), 10)
                     self.modified_labels_op = tf.identity(
-                        self.alpha_var * self.y_ + (1 - self.alpha_var.value()) * self.new_labels,
+                        self.alpha_var * self.dataset_noised_labels_pl + (1 - self.alpha_var.value()) * self.new_labels_op,
                         name='modified_labels')
                     cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(
                         labels=tf.stop_gradient(self.modified_labels_op),
                         logits=self.logits)
             if self.update_mode == 2:
-                self.modified_labels_op = get_new_label_op(self.features_to_means_dist_op, self.y_, self.logits)
+                self.modified_labels_op = get_new_label_op(self.features_to_means_dist_op, self.dataset_noised_labels_pl, self.logits)
                 self.use_modified_labels_pl = tf.placeholder(tf.bool)
-                self.new_labels = None
+                self.new_labels_op = None
 
                 cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=tf.cond(self.use_modified_labels_pl,
                                                                                           lambda: self.modified_labels_op,
-                                                                                          lambda: self.y_),
+                                                                                          lambda: self.dataset_noised_labels_pl),
                                                                            logits=self.logits)
 
             if self.update_mode == 3:
                 self.LDA_labels_weight_pl = tf.placeholder(tf.float32, ())
-                self.new_labels = self.LDA_labels
-                self.modified_labels_op = self.LDA_labels_weight_pl * tf.stop_gradient(self.new_labels) + \
-                                          (1 - self.LDA_labels_weight_pl) * self.y_
+                self.new_labels_op = self.LDA_labels
+                self.modified_labels_op = self.LDA_labels_weight_pl * tf.stop_gradient(self.new_labels_op) + \
+                                          (1 - self.LDA_labels_weight_pl) * self.dataset_noised_labels_pl
 
                 cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(
                     labels=self.modified_labels_op,
@@ -233,18 +236,18 @@ class Model:
         #
 
         with tf.name_scope('accuracy'):
-            correct_prediction = tf.equal(tf.argmax(self.preds, 1), tf.argmax(self.y_, 1))
+            correct_prediction = tf.equal(tf.argmax(self.preds, 1), tf.argmax(self.dataset_noised_labels_pl, 1))
             correct_prediction = tf.cast(correct_prediction, tf.float32)
             self.accuracy = tf.reduce_mean(correct_prediction, name='accuracy')
 
         with tf.name_scope('modified_accuracy'):
-            mod_label = self.y_
+            mod_label = self.dataset_noised_labels_pl
             if self.update_mode == 1:
                 mod_label = self.modified_labels_op
             elif self.update_mode == 2:
                 mod_label = tf.cond(self.use_modified_labels_pl,
                                     lambda: self.modified_labels_op,
-                                    lambda: self.y_)
+                                    lambda: self.dataset_noised_labels_pl)
             elif self.update_mode == 3:
                 mod_label = self.modified_labels_op
 
@@ -252,7 +255,7 @@ class Model:
             self.modified_labels_accuracy = tf.reduce_mean(acc, name='accuracy')
 
         with tf.name_scope('new_labels_accuracy'):
-            acc = tf.reduce_sum(tf.one_hot(tf.argmax(self.preds, 1), N_CLASSES) * self.new_labels, 1)
+            acc = tf.reduce_sum(tf.one_hot(tf.argmax(self.preds, 1), N_CLASSES) * self.new_labels_op, 1)
             self.new_labels_accuracy = tf.reduce_mean(acc, name='accuracy')
 
     def train(self, train_dataset_type='train'):
@@ -262,6 +265,7 @@ class Model:
         X0, Y0 = read_dataset(name=self.dataset_name, type='train')
 
         Y_ind = np.argmax(Y, 1)
+        Y0_ind = np.argmax(Y0, 1)
         Y_ind_per_class = [[] for c in range(N_CLASSES)]
         for i in range(self.dataset_size):
             Y_ind_per_class[Y_ind[i]].append(i)
@@ -444,7 +448,7 @@ class Model:
                     sess.run(self.reset_class_feature_sums_and_counts_op)
 
                     for batch in batch_iterator(X_augmented, Y, BATCH_SIZE, False):
-                        feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: False}
+                        feed_dict = {self.nn_input: batch[0], self.dataset_noised_labels_pl: batch[1], self.is_training: False}
                         sess.run(self.update_class_features_sum_and_counts_op, feed_dict=feed_dict)
 
                     counts = self.class_feature_counts_var.eval(sess)
@@ -477,7 +481,7 @@ class Model:
                     batch_cnt += 1
                     batch_size = batch[0].shape[0]
 
-                    feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: True,
+                    feed_dict = {self.nn_input: batch[0], self.dataset_noised_labels_pl: batch[1], self.is_training: True,
                                  self.epoch_pl: i_epoch}
 
                     if self.update_mode == 2:
@@ -495,18 +499,20 @@ class Model:
                         modified_labels_accuracy = (modified_labels_accuracy * batch_cnt * BATCH_SIZE + batch_accs) / \
                                                    (batch_cnt * BATCH_SIZE + batch_size)
 
-                        new_labels = self.new_labels.eval(feed_dict=feed_dict)
-                        batch_accs = np.sum(new_labels * Y0[batch[2]])
-                        new_labels_accuracy = (new_labels_accuracy * batch_cnt * BATCH_SIZE + batch_accs) / \
+                        new_labels = self.new_labels_op.eval(feed_dict=feed_dict)
+                        new_labels_accs = new_labels * Y0[batch[2]]
+                        new_labels_acc_sum = np.sum(new_labels_accs)
+
+                        new_labels_accuracy = (new_labels_accuracy * batch_cnt * BATCH_SIZE + new_labels_acc_sum) / \
                                               (batch_cnt * BATCH_SIZE + batch_size)
 
                         batch_accs = np.sum(new_labels * Y[batch[2]])
                         new_labels_accuracy_with_noise = (new_labels_accuracy_with_noise * batch_cnt * BATCH_SIZE +
                                                           batch_accs) / (batch_cnt * BATCH_SIZE + batch_size)
 
-                        clean_samples = (np.argmax(Y[batch[2]], 1) == np.argmax(Y0[batch[2]], 1)).astype(int).reshape((-1, 1))
+                        clean_samples = (Y_ind[batch[2]] == Y0_ind[batch[2]]).astype(int).reshape((-1, 1))
                         clean_samples_cnt = np.sum(clean_samples)
-                        batch_accs = np.sum(new_labels * Y0[batch[2]] * clean_samples)
+                        batch_accs = np.sum(new_labels_accs * clean_samples)
                         new_labels_accuracy_on_clean_only = (
                                                         new_labels_accuracy_on_clean_only * clean_samples_total_cnt +
                                                         batch_accs) / (clean_samples_total_cnt + clean_samples_cnt)
@@ -514,7 +520,7 @@ class Model:
 
                         noised_samples = 1 - clean_samples
                         noised_samples_cnt = np.sum(noised_samples)
-                        batch_accs = np.sum(new_labels * Y0[batch[2]] * noised_samples)
+                        batch_accs = np.sum(new_labels_accs * noised_samples)
                         new_labels_accuracy_on_noised_only = (
                                                         new_labels_accuracy_on_noised_only * noised_samples_total_cnt +
                                                         batch_accs) / (noised_samples_total_cnt + noised_samples_cnt)
@@ -544,7 +550,7 @@ class Model:
 
                 if self.to_log(2) or self.to_log(3) or self.to_log(4):
                     for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE, False):
-                        feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: False}
+                        feed_dict = {self.nn_input: batch[0], self.dataset_noised_labels_pl: batch[1], self.is_training: False}
                         if self.to_log(2):
                             lid_features_per_element[batch[2]] = self.lid_layer_op.eval(feed_dict=feed_dict)
                         if self.to_log(3):
@@ -584,7 +590,7 @@ class Model:
                             # compute class feature means
                             for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
                                 feed_dict = {self.features_pl: block_features[batch[2]],
-                                             self.y_: batch[1],
+                                             self.dataset_noised_labels_pl: batch[1],
                                              self.class_feature_ops_keep_array_pl: keep_arr[batch[2]]}
                                 sess.run(self.update_class_features_sum_and_counts_op, feed_dict=feed_dict)
 
@@ -595,7 +601,7 @@ class Model:
 
                             # compute class feature covariance matrices
                             for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
-                                feed_dict = {self.features_pl: block_features[batch[2]], self.y_: batch[1],
+                                feed_dict = {self.features_pl: block_features[batch[2]], self.dataset_noised_labels_pl: batch[1],
                                              self.class_feature_means_pl: class_feature_means,
                                              self.class_feature_ops_keep_array_pl: keep_arr[batch[2]]}
                                 sess.run(self.update_class_covariances_op, feed_dict=feed_dict)
@@ -626,7 +632,7 @@ class Model:
                                 feed_dict = {self.features_pl: block_features[batch[2]],
                                              self.class_feature_means_pl: class_feature_means,
                                              self.class_inv_covariances_pl: class_inv_covariances,
-                                             self.y_: batch[1]}
+                                             self.dataset_noised_labels_pl: batch[1]}
                                 mah_dists = sess.run(self.mahalanobis_dist_calc, feed_dict=feed_dict)
                                 mahalanobis_distances[batch[2]] = mah_dists
 
@@ -670,7 +676,8 @@ class Model:
 
                             if self.update_mode == 1 or self.update_mode == 3:
                                 saver.restore(sess, model_path + str(i_epoch - 1))
-                                print('Turning point passed, reverting to previous epoch and starting using modified loss')
+                                print('Turning point passed, reverting to previous epoch and starting'
+                                      'using modified labels')
 
                     #
                     # MODIFYING ALPHA
@@ -678,6 +685,7 @@ class Model:
 
                     if turning_epoch != -1:
                         new_alpha_value = np.exp(-(i_epoch / self.n_epochs) * (lid_per_epoch[-1] / lid_per_epoch[:-1].min()))
+                        # new_alpha_value = max(0, 1 - (i_epoch - turning_epoch) / self.n_epochs_to_transition)
                         print('\nnew alpha value:', new_alpha_value)
                     else:
                         new_alpha_value = 1
@@ -695,7 +703,7 @@ class Model:
                 for batch in batch_iterator_with_indices(X_test, Y_test, BATCH_SIZE, False):
                     i_batch += 1
 
-                    feed_dict = {self.nn_input: batch[0], self.y_: batch[1], self.is_training: False}
+                    feed_dict = {self.nn_input: batch[0], self.dataset_noised_labels_pl: batch[1], self.is_training: False}
                     if self.update_mode == 2:
                         feed_dict[self.class_feature_means_pl] = class_feature_means
                         feed_dict[self.use_modified_labels_pl] = use_modified_labels()

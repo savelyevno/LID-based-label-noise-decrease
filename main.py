@@ -6,13 +6,14 @@ if __name__ == '__main__':
     # full_test('model')
     # test_image('testSample/img_3.jpg')
 
-    model_name = '20_lda_ep120_4blk32'
+    model_name = '20_paper_ep120_1blk128_relu'
     print(model_name)
     model = Model(dataset_name='cifar-10', model_name=model_name,
-                  n_epochs=120, n_blocks=4, block_width=32,
+                  n_epochs=120, n_epochs_to_transition=20,
+                  n_blocks=1, block_width=128,
                   lr_segments=[(0.33, 1e-2), (0.33, 1e-3), (0.33, 1e-4)],
                   # lr_segments=[(0.3, 1e-4), (0.3, 1e-5), (0.4, 1e-6)],
-                  update_mode=3, update_param=3, update_submode=0, update_subsubmode=0,
+                  update_mode=1, update_param=3, update_submode=1, update_subsubmode=0,
                   log_mask=1 * (1 << 0) +
                            0 * (1 << 1) +
                            0 * (1 << 2) +
