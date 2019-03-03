@@ -146,7 +146,8 @@ class Model:
                                                                           self.features_pl, self.labels_pl)
 
             self.block_class_feature_means_pl = tf.placeholder(tf.float32, (self.n_blocks, N_CLASSES, self.block_width))
-            self.block_inv_covariance_pl = tf.placeholder(tf.float32, (self.n_blocks, self.block_width, self.block_width))
+            self.block_inv_covariance_pl = tf.placeholder(tf.float32,
+                                                          (self.n_blocks, self.block_width, self.block_width))
 
             self.LDA_logits = get_LDA_logits_calc_op(self.block_class_feature_means_pl, self.block_inv_covariance_pl,
                                                      self.feature_layer, np.ones(N_CLASSES, np.float32) / N_CLASSES)
@@ -181,7 +182,7 @@ class Model:
                 self.LDA_labels_weight_pl = tf.placeholder(tf.float32, ())
                 self.new_labels_op = self.LDA_labels
                 self.modified_labels_op = self.LDA_labels_weight_pl * tf.stop_gradient(self.new_labels_op) + \
-                                          (1 - self.LDA_labels_weight_pl) * self.labels_pl
+                    (1 - self.LDA_labels_weight_pl) * self.labels_pl
 
                 cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(
                     labels=self.modified_labels_op,
@@ -270,6 +271,11 @@ class Model:
 
             summaries_to_merge = [test_accuracy_summary]
 
+            modified_labels_accuracy_summary_scalar = None
+            new_labels_accuracy_summary_scalar = None
+            new_labels_accuracy_with_noise_summary_scalar = None
+            new_labels_accuracy_on_clean_only_summary_scalar = None
+            new_labels_accuracy_on_noised_only_summary_scalar = None
             if self.update_mode == 1 or self.update_mode == 2:
                 modified_labels_accuracy_summary_scalar = tf.placeholder(tf.float32)
                 modified_labels_accuracy_summary = tf.summary.scalar(name='modified_labels_accuracy',
@@ -311,6 +317,7 @@ class Model:
 
             lid_summary = None
             lid_summary_scalar = None
+            alpha_summary_scalar = None
             if self.to_log(0):
                 lid_summary_scalar = tf.placeholder(tf.float32)
                 lid_summary = tf.summary.scalar(name='LID', tensor=lid_summary_scalar)
@@ -325,10 +332,13 @@ class Model:
         saver = tf.train.Saver(max_to_keep=1)
         model_path = 'checkpoints/' + self.dataset_name + '/' + self.model_name + '/'
 
+        lid_features_per_epoch_per_element = None
         if self.to_log(1):
             lid_features_per_epoch_per_element = np.empty((0, self.dataset_size, self.total_hidden_width))
+        pre_lid_features_per_epoch_per_element = None
         if self.to_log(2):
             pre_lid_features_per_epoch_per_element = np.empty((0, self.dataset_size, self.total_hidden_width))
+        logits_per_epoch_per_element = None
         if self.to_log(3):
             logits_per_epoch_per_element = np.empty((0, self.dataset_size, N_CLASSES))
 
@@ -384,6 +394,7 @@ class Model:
             # EPOCH LOOP
             #
 
+            new_alpha_value = 1
             turning_epoch = -1  # number of epoch where we turn from regular loss function to the modified one
             labels_reset = False
 
@@ -589,7 +600,8 @@ class Model:
                     partial_accuracy = self.accuracy.eval(feed_dict=feed_dict)
 
                     test_batch_size = len(batch[0])
-                    test_accuracy = (tested_cnt * test_accuracy + partial_accuracy * test_batch_size) / (tested_cnt + test_batch_size)
+                    test_accuracy = (tested_cnt * test_accuracy + partial_accuracy * test_batch_size) /\
+                                    (tested_cnt + test_batch_size)
                     tested_cnt += test_batch_size
 
                 print('\ntest accuracy after %dth epoch: %g' % (i_epoch, test_accuracy))
@@ -609,7 +621,7 @@ class Model:
                           (new_labels_accuracy,))
                     feed_dict[new_labels_accuracy_summary_scalar] = new_labels_accuracy
 
-                    print('accuracy of new labels compared to noise labels on a train set: %g' %
+                    print('accuracy of new labels compared to current labels on a train set: %g' %
                           (new_labels_accuracy_with_noise,))
                     feed_dict[new_labels_accuracy_with_noise_summary_scalar] = new_labels_accuracy_with_noise
 
@@ -641,19 +653,22 @@ class Model:
                         lid_features_per_epoch_per_element,
                         np.expand_dims(lid_features_per_element, 0),
                         0)
-                    np.save('lid_features/' + self.dataset_name + '/' + self.model_name, lid_features_per_epoch_per_element)
+                    np.save(file='lid_features/' + self.dataset_name + '/' + self.model_name,
+                            arr=lid_features_per_epoch_per_element)
                 if self.to_log(2):
                     pre_lid_features_per_epoch_per_element = np.append(
                         pre_lid_features_per_epoch_per_element,
                         np.expand_dims(pre_lid_features_per_element, 0),
                         0)
-                    np.save('pre_lid_features/' + self.dataset_name + '/' + self.model_name, pre_lid_features_per_epoch_per_element)
+                    np.save(file='pre_lid_features/' + self.dataset_name + '/' + self.model_name,
+                            arr=pre_lid_features_per_epoch_per_element)
                 if self.to_log(3):
                     logits_per_epoch_per_element = np.append(
                         logits_per_epoch_per_element,
                         np.expand_dims(logits_per_element, 0),
                         0)
-                    np.save('logits/' + self.dataset_name + '/' + self.model_name, logits_per_epoch_per_element)
+                    np.save(file='logits/' + self.dataset_name + '/' + self.model_name,
+                            arr=logits_per_epoch_per_element)
 
                 print(timer.stop())
 
@@ -709,8 +724,6 @@ class Model:
             for i in range(n_blocks):
                 block_features_ops.append(graph.get_tensor_by_name('fc1/bn_' + str(i + 1) + ':0'))
                 block_logit_ops.append(graph.get_tensor_by_name('fc2/logits_' + str(i + 1) + ':0'))
-
-            n_dims = block_features_ops[0].shape[1]
 
             X, Y = read_dataset(name=dataset_name, type=dataset_type)
 
