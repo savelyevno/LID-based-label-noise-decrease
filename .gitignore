@@ -8,6 +8,8 @@ figs/**
 checkpoints/*/*
 !checkpoints/*/.empty
 
+old_checkpoints/*/*/
+
 distances_to_mean/*/*
 !distances_to_mean/*/.empty
 

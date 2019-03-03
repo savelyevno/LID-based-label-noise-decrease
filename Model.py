@@ -19,7 +19,7 @@ class Model:
     def __init__(self, dataset_name, model_name, update_mode, update_param, n_epochs, lr_segments=None,
                  log_mask=0, lid_use_pre_relu=False, lda_use_pre_relu=True,
                  n_blocks=1, block_width=256,
-                 reset_labels=False, n_epochs_to_transition=None):
+                 n_label_resets=0, n_epochs_to_transition=None, min_alpha=None):
         """
 
         :param dataset_name:         dataset name: mnist/cifar-10
@@ -45,8 +45,9 @@ class Model:
         self.n_blocks = n_blocks
         self.n_epochs = n_epochs
         self.lr_segments = lr_segments
-        self.reset_labels = reset_labels
         self.n_epochs_to_transition = n_epochs_to_transition
+        self.n_label_resets = n_label_resets
+        self.min_alpha = min_alpha
 
         self.block_width = block_width
         self.total_hidden_width = block_width * n_blocks
@@ -99,7 +100,6 @@ class Model:
         # LID calculation
 
         if self.update_mode == 1 or self.to_log(0):
-            self.lid_per_epoch = np.array([])
             if self.lid_use_pre_relu:
                 self.lid_calc_op = get_lid_calc_op(self.pre_lid_layer_op)
             else:
@@ -172,7 +172,7 @@ class Model:
                 if self.update_mode == 1:
                     self.new_labels_op = tf.one_hot(tf.argmax(self.preds, 1), 10)
                     self.modified_labels_op = tf.identity(
-                        self.alpha_var * self.labels_pl + (1 - self.alpha_var.value()) * self.new_labels_op,
+                        self.alpha_var * self.labels_pl + (1 - self.alpha_var) * self.new_labels_op,
                         name='modified_labels')
                     cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(
                         labels=tf.stop_gradient(self.modified_labels_op),
@@ -181,8 +181,8 @@ class Model:
             if self.update_mode == 2:
                 self.LDA_labels_weight_pl = tf.placeholder(tf.float32, ())
                 self.new_labels_op = self.LDA_labels
-                self.modified_labels_op = self.LDA_labels_weight_pl * tf.stop_gradient(self.new_labels_op) + \
-                    (1 - self.LDA_labels_weight_pl) * self.labels_pl
+                self.modified_labels_op = (1 - self.LDA_labels_weight_pl) * tf.stop_gradient(self.new_labels_op) + \
+                    self.LDA_labels_weight_pl * self.labels_pl
 
                 cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(
                     labels=self.modified_labels_op,
@@ -210,11 +210,7 @@ class Model:
             acc = tf.reduce_sum(tf.one_hot(tf.argmax(self.preds, 1), N_CLASSES) * mod_label, 1)
             self.modified_labels_accuracy = tf.reduce_mean(acc, name='accuracy')
 
-        with tf.name_scope('new_labels_accuracy'):
-            acc = tf.reduce_sum(tf.one_hot(tf.argmax(self.preds, 1), N_CLASSES) * self.new_labels_op, 1)
-            self.new_labels_accuracy = tf.reduce_mean(acc, name='accuracy')
-
-        self.epoch_pl = tf.placeholder(tf.int32)
+        self.rel_epoch_pl = tf.placeholder(tf.int32)
 
         with tf.name_scope('learning_rate'):
             def produce_lr_tensor(segment_start=0, segment_i=1):
@@ -222,7 +218,7 @@ class Model:
                     return self.lr_segments[-1][1]
                 else:
                     segment_end = segment_start + self.lr_segments[segment_i - 1][0]
-                    return tf.cond(pred=tf.cast(self.epoch_pl, tf.float32) < segment_end * self.n_epochs,
+                    return tf.cond(pred=tf.cast(self.rel_epoch_pl, tf.float32) < segment_end * self.n_epochs,
                                    true_fn=lambda: self.lr_segments[segment_i - 1][1],
                                    false_fn=lambda: produce_lr_tensor(segment_end, segment_i + 1))
 
@@ -247,9 +243,9 @@ class Model:
         for i in range(self.dataset_size):
             Y_ind_per_class[Y_ind[i]].append(i)
 
-        Y_current = Y
-        Y_current_ind = Y_ind
-        Y_current_ind_per_class = Y_ind_per_class
+        Y_current = np.array(Y)
+        Y_current_ind = np.array(Y_ind)
+        Y_current_ind_per_class = np.array(Y_ind_per_class)
 
         X_test, Y_test = read_dataset(name=self.dataset_name, type='test')
 
@@ -330,6 +326,7 @@ class Model:
             per_epoch_summary = tf.summary.merge(summaries_to_merge)
 
         saver = tf.train.Saver(max_to_keep=1)
+        saver0 = tf.train.Saver(max_to_keep=1000)
         model_path = 'checkpoints/' + self.dataset_name + '/' + self.model_name + '/'
 
         lid_features_per_epoch_per_element = None
@@ -356,7 +353,7 @@ class Model:
             summary_writer = tf.summary.FileWriter(model_path, sess.graph)
 
             sess.run(tf.global_variables_initializer())
-            saver.save(sess, model_path + str(0))
+            saver0.save(sess, model_path + 'start')
 
             #
             # CALCULATE AND LOG INITIAL LID SCORE
@@ -365,7 +362,7 @@ class Model:
             lid_per_epoch = None
             if self.update_mode == 1 or self.to_log(0):
                 initial_lid_score = self._calc_lid(X, Y, self.lid_calc_op, self.nn_input_pl, self.is_training)
-                lid_per_epoch = np.append(self.lid_per_epoch, initial_lid_score)
+                lid_per_epoch = [initial_lid_score]
 
                 print('initial LID score:', initial_lid_score)
 
@@ -394,16 +391,22 @@ class Model:
             # EPOCH LOOP
             #
 
-            new_alpha_value = 1
-            turning_epoch = -1  # number of epoch where we turn from regular loss function to the modified one
-            labels_reset = False
+            alpha_value = 1
+            turning_rel_epoch = -1  # number of epoch where we turn from regular loss function to the modified one
 
+            n_label_resets_done = 0
+            i_epoch_tot = 0
+            i_epoch_rel = 0
             i_step = -1
-            for i_epoch in range(1, self.n_epochs + 1):
+            while i_epoch_rel < self.n_epochs:
                 timer.start()
 
+                i_epoch_rel += 1
+                i_epoch_tot += 1
+
                 print('___________________________________________________________________________')
-                print('\nSTARTING EPOCH %d, learning rate: %g\n' % (i_epoch, self.lr.eval({self.epoch_pl: i_epoch})))
+                print('\nSTARTING EPOCH relative: %d, total: %d; learning rate: %g\n' %
+                      (i_epoch_rel, i_epoch_tot, self.lr.eval({self.rel_epoch_pl: i_epoch_rel})))
 
                 if X_augmented_iter is not None:
                     print('Augmenting data...')
@@ -413,11 +416,54 @@ class Model:
 
                 print('')
 
+                if self.update_mode == 2:
+                    #
+                    # COMPUTE LDA PARAMETERS
+                    #
+
+                    self._compute_LDA(sess, X_augmented, Y_current, Y_current_ind, Y_current_ind_per_class)
+
                 #
                 # TRAIN
                 #
 
                 print('starting training...')
+
+                for batch in batch_iterator_with_indices(X_augmented, Y_current, BATCH_SIZE):
+                    i_step += 1
+
+                    feed_dict = {self.nn_input_pl: batch[0], self.labels_pl: batch[1], self.is_training: True,
+                                 self.rel_epoch_pl: i_epoch_rel}
+
+                    if self.update_mode == 2:
+                        feed_dict[self.LDA_labels_weight_pl] = self.alpha_var.eval(sess)
+                        feed_dict[self.block_class_feature_means_pl] = self.block_class_feature_means
+                        feed_dict[self.block_inv_covariance_pl] = self.block_inv_covariances
+
+                    self.train_step.run(feed_dict=feed_dict)
+
+                    if i_step % 100 == 0:
+                        feed_dict[self.is_training] = False
+                        train_accuracy = self.accuracy.eval(feed_dict=feed_dict)
+                        print('\tstep %d, training accuracy %g' % (i_step, train_accuracy))
+
+                        summary_str = sess.run(summary, feed_dict=feed_dict)
+                        summary_writer.add_summary(summary_str, i_step)
+                        summary_writer.flush()
+
+                #
+                # LOG THINGS
+                #
+
+                lid_features_per_element = None
+                if self.to_log(1):
+                    lid_features_per_element = np.empty((self.dataset_size, self.total_hidden_width))
+                pre_lid_features_per_element = None
+                if self.to_log(2):
+                    pre_lid_features_per_element = np.empty((self.dataset_size, self.total_hidden_width))
+                logits_per_element = None
+                if self.to_log(3):
+                    logits_per_element = np.empty((self.dataset_size, N_CLASSES))
 
                 modified_labels_accuracy = 0
                 new_labels_accuracy = 0
@@ -427,24 +473,19 @@ class Model:
                 clean_samples_total_cnt = 0
                 noised_samples_total_cnt = 0
                 batch_cnt = -1
-                for batch in batch_iterator_with_indices(X_augmented, Y_current, BATCH_SIZE):
-                    i_step += 1
-
-                    batch_cnt += 1
+                for batch in batch_iterator_with_indices(X_augmented, Y_current, BATCH_SIZE, False):
                     batch_size = batch[0].shape[0]
-
+                    batch_cnt += 1
                     feed_dict = {self.nn_input_pl: batch[0], self.labels_pl: batch[1], self.is_training: False}
-
                     if self.update_mode == 2:
-                        feed_dict[self.LDA_labels_weight_pl] = 1 - self.alpha_var.eval(sess)
+                        feed_dict[self.LDA_labels_weight_pl] = self.alpha_var.eval(sess)
                         feed_dict[self.block_class_feature_means_pl] = self.block_class_feature_means
                         feed_dict[self.block_inv_covariance_pl] = self.block_inv_covariances
 
                     # Calculate different label accuracies
                     if self.update_mode == 1 or self.update_mode == 2:
                         modified_labels = self.modified_labels_op.eval(feed_dict=feed_dict)
-                        modified_labels_ind = np.argmax(modified_labels, 1)
-                        batch_accs = np.sum((modified_labels_ind == Y0_ind[batch[2]]).astype(int))
+                        batch_accs = np.sum(modified_labels * Y0[batch[2]])
                         modified_labels_accuracy = (modified_labels_accuracy * batch_cnt * BATCH_SIZE + batch_accs) / \
                                                    (batch_cnt * BATCH_SIZE + batch_size)
 
@@ -473,117 +514,40 @@ class Model:
                         noised_samples_cnt = np.sum(noised_samples)
                         batch_accs = np.sum(new_labels_accs * noised_samples)
                         new_labels_accuracy_on_noised_only = (
-                                                        new_labels_accuracy_on_noised_only * noised_samples_total_cnt +
-                                                        batch_accs) / (noised_samples_total_cnt + noised_samples_cnt)
+                            new_labels_accuracy_on_noised_only * noised_samples_total_cnt + batch_accs) / \
+                                max((noised_samples_total_cnt + noised_samples_cnt), 1)
                         noised_samples_total_cnt += noised_samples_cnt
 
-                    # Train
-                    feed_dict[self.is_training] = True
-                    feed_dict[self.epoch_pl] = i_epoch
-                    self.train_step.run(feed_dict=feed_dict)
-                    feed_dict[self.is_training] = False
+                    if self.to_log(1):
+                        lid_features_per_element[batch[2]] = self.lid_layer_op.eval(feed_dict=feed_dict)
+                    if self.to_log(2):
+                        pre_lid_features_per_element[batch[2]] = self.pre_lid_layer_op.eval(feed_dict=feed_dict)
+                    if self.to_log(3):
+                        logits_per_element[batch[2]] = self.logits.eval(feed_dict=feed_dict)
 
-                    if i_step % 100 == 0:
-                        train_accuracy = self.accuracy.eval(feed_dict=feed_dict)
-                        print('\tstep %d, training accuracy %g' % (i_step, train_accuracy))
-
-                        summary_str = sess.run(summary, feed_dict=feed_dict)
-                        summary_writer.add_summary(summary_str, i_step)
-                        summary_writer.flush()
-
-                #
-                # LOG FEATURES/LOGITS
-                #
-
-                lid_features_per_element = None
                 if self.to_log(1):
-                    lid_features_per_element = np.empty((self.dataset_size, self.total_hidden_width))
+                    lid_features_per_epoch_per_element = np.append(
+                        lid_features_per_epoch_per_element,
+                        np.expand_dims(lid_features_per_element, 0),
+                        0)
+                    np.save(file='lid_features/' + self.dataset_name + '/' + self.model_name,
+                            arr=lid_features_per_epoch_per_element)
 
-                pre_lid_features_per_element = None
                 if self.to_log(2):
-                    pre_lid_features_per_element = np.empty((self.dataset_size, self.total_hidden_width))
+                    pre_lid_features_per_epoch_per_element = np.append(
+                        pre_lid_features_per_epoch_per_element,
+                        np.expand_dims(pre_lid_features_per_element, 0),
+                        0)
+                    np.save(file='pre_lid_features/' + self.dataset_name + '/' + self.model_name,
+                            arr=pre_lid_features_per_epoch_per_element)
 
-                logits_per_element = None
                 if self.to_log(3):
-                    logits_per_element = np.empty((self.dataset_size, N_CLASSES))
-
-                if self.to_log(1) or self.to_log(2) or self.to_log(3):
-                    for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE, False):
-                        feed_dict = {self.nn_input_pl: batch[0], self.is_training: False}
-                        if self.to_log(1):
-                            lid_features_per_element[batch[2]] = self.lid_layer_op.eval(feed_dict=feed_dict)
-                        if self.to_log(2):
-                            pre_lid_features_per_element[batch[2]] = self.pre_lid_layer_op.eval(feed_dict=feed_dict)
-                        if self.to_log(3):
-                            logits_per_element[batch[2]] = self.logits.eval(feed_dict=feed_dict)
-
-                if self.update_mode == 2:
-                    #
-                    # COMPUTE LDA PARAMETERS
-                    #
-
-                    self._compute_LDA(sess, X_augmented, Y_current, Y_current_ind, Y_current_ind_per_class)
-
-                if self.update_mode == 1 or self.update_mode == 2 or self.to_log(0):
-                    #
-                    # CALCULATE LID
-                    #
-
-                    new_lid_score = self._calc_lid(X, Y, self.lid_calc_op, self.nn_input_pl, self.is_training)
-                    lid_per_epoch = np.append(lid_per_epoch, new_lid_score)
-
-                    print('\nLID score after %dth epoch: %g' % (i_epoch, new_lid_score,))
-
-                    #
-                    # CHECK FOR STOPPING INIT PERIOD
-                    #
-
-                    if turning_epoch == -1 and i_epoch > EPOCH_WINDOW:
-                        last_w_lids = lid_per_epoch[-EPOCH_WINDOW - 1: -1]
-
-                        lid_check_value = new_lid_score - last_w_lids.mean() - 2 * last_w_lids.var() ** 0.5
-
-                        print('LID check:', lid_check_value)
-
-                        if lid_check_value > 0:
-                            turning_epoch = i_epoch - 1
-
-                            if self.update_mode == 1 or self.update_mode == 2:
-                                saver.restore(sess, model_path + str(i_epoch - 1))
-                                print('Turning point passed, reverting to previous epoch and starting'
-                                      'using modified labels')
-
-                    #
-                    # MODIFY ALPHA
-                    #
-
-                    if turning_epoch != -1:
-                        if self.reset_labels:
-                            new_alpha_value = max(0, 1 - (i_epoch - turning_epoch) / self.n_epochs_to_transition)
-                        else:
-                            new_alpha_value = np.exp(
-                                -(i_epoch / self.n_epochs) * (lid_per_epoch[-1] / lid_per_epoch[:-1].min()))
-                        print('\nnew alpha value:', new_alpha_value)
-
-                        if self.reset_labels and new_alpha_value < EPS and not labels_reset:
-                            Y_current = np.zeros((self.dataset_size, N_CLASSES), np.float32)
-
-                            for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE, False):
-                                new_labels = self.new_labels_op.eval(feed_dict={self.nn_input_pl: batch[0],
-                                                                                self.is_training: False})
-                                Y_current[batch[2]] = new_labels
-
-                            Y_current_ind = np.argmax(Y_current, 1)
-                            Y_current_ind_per_class = [[] for c in range(N_CLASSES)]
-                            for i in range(self.dataset_size):
-                                Y_current_ind_per_class[Y_current_ind[i]].append(i)
-
-                            labels_reset = True
-                            print('alpha got 0, resetting current labels')
-                    else:
-                        new_alpha_value = 1
-
-                    sess.run(self.alpha_var.assign(new_alpha_value))
+                    logits_per_epoch_per_element = np.append(
+                        logits_per_epoch_per_element,
+                        np.expand_dims(logits_per_element, 0),
+                        0)
+                    np.save(file='logits/' + self.dataset_name + '/' + self.model_name,
+                            arr=logits_per_epoch_per_element)
 
                 #
                 # TEST ACCURACY
@@ -604,7 +568,7 @@ class Model:
                                     (tested_cnt + test_batch_size)
                     tested_cnt += test_batch_size
 
-                print('\ntest accuracy after %dth epoch: %g' % (i_epoch, test_accuracy))
+                print('\ntest accuracy after %dth epoch: %g' % (i_epoch_tot, test_accuracy))
 
                 #
                 # WRITE PER EPOCH SUMMARIES
@@ -633,42 +597,96 @@ class Model:
                           (new_labels_accuracy_on_noised_only,))
                     feed_dict[new_labels_accuracy_on_noised_only_summary_scalar] = new_labels_accuracy_on_noised_only
 
+                if self.update_mode == 1 or self.update_mode == 2 or self.to_log(0):
+                    #
+                    # CALCULATE LID
+                    #
+
+                    new_lid_score = self._calc_lid(X, Y, self.lid_calc_op, self.nn_input_pl, self.is_training)
+                    lid_per_epoch.append(new_lid_score)
+
+                    print('\nLID score after %dth epoch: %g' % (i_epoch_tot, new_lid_score,))
+
                 if self.to_log(0):
                     feed_dict[lid_summary_scalar] = lid_per_epoch[-1]
-                    feed_dict[alpha_summary_scalar] = new_alpha_value
+                    feed_dict[alpha_summary_scalar] = alpha_value
 
                 summary_str = sess.run(per_epoch_summary, feed_dict=feed_dict)
                 summary_writer.add_summary(summary_str, i_step + 1)
                 summary_writer.flush()
 
+                if self.update_mode == 1 or self.update_mode == 2 or self.to_log(0):
+                    #
+                    # CHECK FOR STOPPING INIT PERIOD
+                    #
+
+                    if turning_rel_epoch == -1 and len(lid_per_epoch) > EPOCH_WINDOW:
+                        last_w_lids = lid_per_epoch[-EPOCH_WINDOW - 1: -1]
+
+                        lid_check_value = lid_per_epoch[-1] - np.mean(last_w_lids) - 2 * np.std(last_w_lids)
+
+                        print('LID check:', lid_check_value)
+
+                        if lid_check_value > 0:
+                            turning_rel_epoch = i_epoch_rel - 1
+                            print('Turning point passed, starting using modified labels')
+
+                    #
+                    # MODIFY ALPHA
+                    #
+
+                    if turning_rel_epoch != -1:
+                        if n_label_resets_done < self.n_label_resets:
+                            alpha_value = 1 - (1 - self.min_alpha) * (i_epoch_rel - turning_rel_epoch) / \
+                                              max(0.9, self.n_epochs_to_transition)
+                        # elif self.n_label_resets == 0:
+                        else:
+                            alpha_value = np.exp(
+                                -(i_epoch_rel / self.n_epochs) * (lid_per_epoch[-1] / np.min(lid_per_epoch[:-1])))
+                        print('\nnext alpha value:', alpha_value)
+
+                        if n_label_resets_done < self.n_label_resets and alpha_value < self.min_alpha - EPS:
+                            print('alpha reached min value, resetting current labels')
+
+                            Y_current = np.empty((self.dataset_size, N_CLASSES), np.float32)
+                            for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE, False):
+                                feed_dict = {self.nn_input_pl: batch[0], self.is_training: False}
+                                if self.update_mode == 2:
+                                    feed_dict[self.block_class_feature_means_pl] = self.block_class_feature_means
+                                    feed_dict[self.block_inv_covariance_pl] = self.block_inv_covariances
+                                new_labels = self.new_labels_op.eval(feed_dict)
+                                Y_current[batch[2]] = new_labels
+
+                            Y_current_ind = np.argmax(Y_current, 1)
+                            Y_current_ind_per_class = [[] for c in range(N_CLASSES)]
+                            for i in range(self.dataset_size):
+                                Y_current_ind_per_class[Y_current_ind[i]].append(i)
+                            self.is_sample_clean = (Y_current_ind == Y0_ind).astype(int)
+
+                            alpha_value = 1
+                            n_label_resets_done += 1
+
+                            i_epoch_rel = 0
+                            turning_rel_epoch = -1
+                            lid_per_epoch = []
+                            # print('resetting epoch number')
+
+                    sess.run(self.alpha_var.assign(alpha_value))
+
                 #
                 # SAVE MODEL
                 #
 
-                checkpoint_file = model_path + str(i_epoch)
-                saver.save(sess, checkpoint_file)
-
-                if self.to_log(1):
-                    lid_features_per_epoch_per_element = np.append(
-                        lid_features_per_epoch_per_element,
-                        np.expand_dims(lid_features_per_element, 0),
-                        0)
-                    np.save(file='lid_features/' + self.dataset_name + '/' + self.model_name,
-                            arr=lid_features_per_epoch_per_element)
-                if self.to_log(2):
-                    pre_lid_features_per_epoch_per_element = np.append(
-                        pre_lid_features_per_epoch_per_element,
-                        np.expand_dims(pre_lid_features_per_element, 0),
-                        0)
-                    np.save(file='pre_lid_features/' + self.dataset_name + '/' + self.model_name,
-                            arr=pre_lid_features_per_epoch_per_element)
-                if self.to_log(3):
-                    logits_per_epoch_per_element = np.append(
-                        logits_per_epoch_per_element,
-                        np.expand_dims(logits_per_element, 0),
-                        0)
-                    np.save(file='logits/' + self.dataset_name + '/' + self.model_name,
-                            arr=logits_per_epoch_per_element)
+                if (self.update_mode == 1 or self.update_mode == 2) and i_epoch_rel == 0:
+                    # saver0.restore(sess, model_path + 'start')
+                    sess.run(tf.global_variables_initializer())
+                    print('restarting from scratch')
+                elif (self.update_mode == 1 or self.update_mode == 2) and turning_rel_epoch == i_epoch_tot - 1:
+                    saver.restore(sess, model_path + str(i_epoch_tot - 1))
+                    print('restoring model from previous epoch')
+                else:
+                    checkpoint_file = model_path + str(i_epoch_tot)
+                    saver.save(sess, checkpoint_file)
 
                 print(timer.stop())
 
@@ -899,7 +917,7 @@ class Model:
 
                 keep_arr_int = keep_arr.astype(int)
                 kept_and_clean_rat = np.sum(keep_arr_int * self.is_sample_clean) / keep_arr_int.sum()
-                print(round(kept_and_clean_rat, 2), '% of kept samples are clean')
+                print(round(kept_and_clean_rat * 100, 1), '% of kept samples are clean')
 
             self.block_class_feature_means = np.append(self.block_class_feature_means,
                                                        np.expand_dims(class_feature_means, 0), 0)

@@ -6,21 +6,21 @@ if __name__ == '__main__':
     # full_test('model')
     # test_image('testSample/img_3.jpg')
 
-    model_name = '20_paper_ep120_1blk128'
+    model_name = 'clean_paper_ep50_1blk256_rst1_tr20_mna4_1'
     print(model_name)
-    model = Model(dataset_name='mnist', model_name=model_name, n_epochs=120,
-                  n_blocks=1, block_width=128,
-                  # lr_segments=[(0.33, 1e-2), (0.33, 1e-3), (0.33, 1e-4)],
-                  lr_segments=[(0.3, 1e-4), (0.3, 1e-5), (0.4, 1e-6)],
+    model = Model(dataset_name='cifar-10', model_name=model_name, n_epochs=50,
+                  n_blocks=1, block_width=256,
+                  lr_segments=[(0.8, 1e-2), (0.1, 1e-3), (0.1, 1e-4)],
+                  # lr_segments=[(0.25, 1e-5), (0.75, 1e-6)],
                   # lid_use_pre_relu=False, lda_use_pre_relu=True,
-                  update_mode=1, update_param=3,
-                  reset_labels=True, n_epochs_to_transition=10,
+                  update_mode=1, update_param=4,
+                  n_label_resets=1, n_epochs_to_transition=20, min_alpha=0.4,
                   log_mask=1 * (1 << 0) +
                            0 * (1 << 1) +
                            0 * (1 << 2) +
                            0 * (1 << 3)
                   )
-    model.train('train20')
+    model.train('train')
 
     # model_name = 'clean_none_lr_times_1e-3_4_block16'
     # # model_name = 'clean_paper_lr_1e-5_30_1e-6'
