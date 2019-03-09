@@ -19,7 +19,7 @@ class Model:
     def __init__(self, dataset_name, model_name, update_mode, update_param, n_epochs, lr_segments=None,
                  log_mask=0, lid_use_pre_relu=False, lda_use_pre_relu=True,
                  n_blocks=1, block_width=256,
-                 n_label_resets=0, n_epochs_to_transition=None, min_alpha=None):
+                 n_label_resets=0, n_epochs_to_transition=None, min_alpha=None, cut_train_set=False):
         """
 
         :param dataset_name:         dataset name: mnist/cifar-10
@@ -48,10 +48,10 @@ class Model:
         self.n_epochs_to_transition = n_epochs_to_transition
         self.n_label_resets = n_label_resets
         self.min_alpha = min_alpha
+        self.cut_train_set = cut_train_set
 
         self.block_width = block_width
         self.total_hidden_width = block_width * n_blocks
-        self.dataset_size = DATASET_SIZE[dataset_name]
 
     def _build(self):
         #
@@ -236,16 +236,23 @@ class Model:
         X0, Y0 = read_dataset(name=self.dataset_name, type='train')
 
         Y_ind = np.argmax(Y, 1)
-        Y0_ind = np.argmax(Y0, 1)
-        self.is_sample_clean = (Y_ind == Y0_ind).astype(int)
+        Y0_cls_ind = np.argmax(Y0, 1)
+        self.is_sample_clean = (Y_ind == Y0_cls_ind).astype(int)
 
         Y_ind_per_class = [[] for c in range(N_CLASSES)]
-        for i in range(self.dataset_size):
+        for i in range(X.shape[0]):
             Y_ind_per_class[Y_ind[i]].append(i)
 
+        X_current = np.array(X)
+        self.current_dataset_size = X.shape[0]
+        X_current_ind = np.arange(self.current_dataset_size)
+
         Y_current = np.array(Y)
-        Y_current_ind = np.array(Y_ind)
+        Y_current_cls_ind = np.array(Y_ind)
         Y_current_ind_per_class = np.array(Y_ind_per_class)
+
+        Y0_current_cls_ind = np.array(Y0_cls_ind)
+        Y0_current = np.array(Y0)
 
         X_test, Y_test = read_dataset(name=self.dataset_name, type='test')
 
@@ -331,13 +338,13 @@ class Model:
 
         lid_features_per_epoch_per_element = None
         if self.to_log(1):
-            lid_features_per_epoch_per_element = np.empty((0, self.dataset_size, self.total_hidden_width))
+            lid_features_per_epoch_per_element = np.empty((0, self.current_dataset_size, self.total_hidden_width))
         pre_lid_features_per_epoch_per_element = None
         if self.to_log(2):
-            pre_lid_features_per_epoch_per_element = np.empty((0, self.dataset_size, self.total_hidden_width))
+            pre_lid_features_per_epoch_per_element = np.empty((0, self.current_dataset_size, self.total_hidden_width))
         logits_per_epoch_per_element = None
         if self.to_log(3):
-            logits_per_epoch_per_element = np.empty((0, self.dataset_size, N_CLASSES))
+            logits_per_epoch_per_element = np.empty((0, self.current_dataset_size, N_CLASSES))
 
         #
         # SESSION START
@@ -361,7 +368,7 @@ class Model:
 
             lid_per_epoch = None
             if self.update_mode == 1 or self.to_log(0):
-                initial_lid_score = self._calc_lid(X, Y, self.lid_calc_op, self.nn_input_pl, self.is_training)
+                initial_lid_score = self._calc_lid(X_current, Y_current, self.lid_calc_op, self.nn_input_pl, self.is_training)
                 lid_per_epoch = [initial_lid_score]
 
                 print('initial LID score:', initial_lid_score)
@@ -377,8 +384,10 @@ class Model:
 
             X_augmented_iter = None
             if self.data_augmenter is not None:
-                self.data_augmenter.fit(X)
-                X_augmented_iter = self.data_augmenter.flow(X, batch_size=X.shape[0], shuffle=False)
+                self.data_augmenter.fit(X_current)
+                X_augmented_iter = self.data_augmenter.flow(X_current,
+                                                            batch_size=self.current_dataset_size,
+                                                            shuffle=False)
 
             #
             # LDA INIT
@@ -412,7 +421,7 @@ class Model:
                     print('Augmenting data...')
                     X_augmented = X_augmented_iter.next()
                 else:
-                    X_augmented = X
+                    X_augmented = X_current
 
                 print('')
 
@@ -421,7 +430,8 @@ class Model:
                     # COMPUTE LDA PARAMETERS
                     #
 
-                    self._compute_LDA(sess, X_augmented, Y_current, Y_current_ind, Y_current_ind_per_class)
+                    # TODO: would unaugmented data change LDA algo performance?
+                    self._compute_LDA(sess, X_augmented, Y_current, Y_current_cls_ind, Y_current_ind_per_class)
 
                 #
                 # TRAIN
@@ -457,13 +467,13 @@ class Model:
 
                 lid_features_per_element = None
                 if self.to_log(1):
-                    lid_features_per_element = np.empty((self.dataset_size, self.total_hidden_width))
+                    lid_features_per_element = np.empty((self.current_dataset_size, self.total_hidden_width))
                 pre_lid_features_per_element = None
                 if self.to_log(2):
-                    pre_lid_features_per_element = np.empty((self.dataset_size, self.total_hidden_width))
+                    pre_lid_features_per_element = np.empty((self.current_dataset_size, self.total_hidden_width))
                 logits_per_element = None
                 if self.to_log(3):
-                    logits_per_element = np.empty((self.dataset_size, N_CLASSES))
+                    logits_per_element = np.empty((self.current_dataset_size, N_CLASSES))
 
                 modified_labels_accuracy = 0
                 new_labels_accuracy = 0
@@ -485,20 +495,20 @@ class Model:
                     # Calculate different label accuracies
                     if self.update_mode == 1 or self.update_mode == 2:
                         modified_labels = self.modified_labels_op.eval(feed_dict=feed_dict)
-                        batch_accs = np.sum(modified_labels * Y0[batch[2]])
+                        batch_accs = np.sum(modified_labels * Y0_current[batch[2]])
                         modified_labels_accuracy = (modified_labels_accuracy * batch_cnt * BATCH_SIZE + batch_accs) / \
                                                    (batch_cnt * BATCH_SIZE + batch_size)
 
                         new_labels = self.new_labels_op.eval(feed_dict=feed_dict)
                         new_labels_ind = np.argmax(new_labels, 1)
 
-                        new_labels_accs = (new_labels_ind == Y0_ind[batch[2]]).astype(int)
+                        new_labels_accs = (new_labels_ind == Y0_current_cls_ind[batch[2]]).astype(int)
                         new_labels_acc_sum = np.sum(new_labels_accs)
 
                         new_labels_accuracy = (new_labels_accuracy * batch_cnt * BATCH_SIZE + new_labels_acc_sum) / \
                                               (batch_cnt * BATCH_SIZE + batch_size)
 
-                        batch_accs = np.sum(new_labels_ind == Y_current_ind[batch[2]]).astype(int)
+                        batch_accs = np.sum(new_labels_ind == Y_current_cls_ind[batch[2]]).astype(int)
                         new_labels_accuracy_with_noise = (new_labels_accuracy_with_noise * batch_cnt * BATCH_SIZE +
                                                           batch_accs) / (batch_cnt * BATCH_SIZE + batch_size)
 
@@ -602,7 +612,8 @@ class Model:
                     # CALCULATE LID
                     #
 
-                    new_lid_score = self._calc_lid(X, Y, self.lid_calc_op, self.nn_input_pl, self.is_training)
+                    # TODO: would augmented data change LIDs?
+                    new_lid_score = self._calc_lid(X_current, Y_current, self.lid_calc_op, self.nn_input_pl, self.is_training)
                     lid_per_epoch.append(new_lid_score)
 
                     print('\nLID score after %dth epoch: %g' % (i_epoch_tot, new_lid_score,))
@@ -636,6 +647,7 @@ class Model:
                     #
 
                     if turning_rel_epoch != -1:
+                    # if True:
                         if n_label_resets_done < self.n_label_resets:
                             alpha_value = 1 - (1 - self.min_alpha) * (i_epoch_rel - turning_rel_epoch) / \
                                               max(0.9, self.n_epochs_to_transition)
@@ -646,22 +658,56 @@ class Model:
                         print('\nnext alpha value:', alpha_value)
 
                         if n_label_resets_done < self.n_label_resets and alpha_value < self.min_alpha - EPS:
+                        # if True:
                             print('alpha reached min value, resetting current labels')
 
-                            Y_current = np.empty((self.dataset_size, N_CLASSES), np.float32)
-                            for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE, False):
+                            Y_current_new = np.empty((self.current_dataset_size, N_CLASSES), np.float32)
+                            for batch in batch_iterator_with_indices(X_augmented, Y_current, BATCH_SIZE, False):
                                 feed_dict = {self.nn_input_pl: batch[0], self.is_training: False}
                                 if self.update_mode == 2:
                                     feed_dict[self.block_class_feature_means_pl] = self.block_class_feature_means
                                     feed_dict[self.block_inv_covariance_pl] = self.block_inv_covariances
                                 new_labels = self.new_labels_op.eval(feed_dict)
-                                Y_current[batch[2]] = new_labels
+                                Y_current_new[batch[2]] = new_labels
 
-                            Y_current_ind = np.argmax(Y_current, 1)
-                            Y_current_ind_per_class = [[] for c in range(N_CLASSES)]
-                            for i in range(self.dataset_size):
-                                Y_current_ind_per_class[Y_current_ind[i]].append(i)
-                            self.is_sample_clean = (Y_current_ind == Y0_ind).astype(int)
+                            if self.cut_train_set:
+                                Y_current_cls_ind_new = np.argmax(Y_current_new, 1)
+                                are_labels_equal_ind = np.where(Y_current_cls_ind == Y_current_cls_ind_new)[0]
+
+                                X_current = np.array(X_current[are_labels_equal_ind])
+                                X_current_ind = np.array(X_current_ind[are_labels_equal_ind])
+
+                                Y_current = np.array(Y_current_new[are_labels_equal_ind])
+                                Y_current_cls_ind = np.array(Y_current_cls_ind_new[are_labels_equal_ind])
+
+                                Y0_current_cls_ind = np.array(Y0_cls_ind[X_current_ind])
+                                Y0_current = np.array(Y0[X_current_ind])
+
+                                self.current_dataset_size = X_current.shape[0]
+                                self.is_sample_clean = (Y_current_cls_ind == Y0_current_cls_ind).astype(int)
+
+                                Y_current_ind_per_class = [[] for c in range(N_CLASSES)]
+                                for i in range(self.current_dataset_size):
+                                    Y_current_ind_per_class[Y_current_cls_ind[i]].append(i)
+
+                                if self.data_augmenter is not None:
+                                    self.data_augmenter.fit(X_current)
+                                    X_augmented_iter = self.data_augmenter.flow(X_current,
+                                                                                batch_size=self.current_dataset_size,
+                                                                                shuffle=False)
+
+                                print('new train set size: %d; clean: %d; noisy: %d' %
+                                      (self.current_dataset_size,
+                                       self.is_sample_clean.sum(),
+                                       self.current_dataset_size - self.is_sample_clean.sum())
+                                      )
+                            else:
+                                Y_current = np.array(Y_current_new)
+                                Y_current_ind = np.argmax(Y_current, 1)
+                                Y_current_ind_per_class = [[] for c in range(N_CLASSES)]
+                                for i in range(self.current_dataset_size):
+                                    Y_current_ind_per_class[Y_current_ind[i]].append(i)
+                                self.is_sample_clean = (Y_current_ind == Y0_cls_ind).astype(int)
 
                             alpha_value = 1
                             n_label_resets_done += 1
@@ -832,11 +878,11 @@ class Model:
 
         return lid_score
 
-    def _compute_LDA(self, sess, X_augmented, Y, Y_ind, Y_ind_per_class):
+    def _compute_LDA(self, sess, X, Y, Y_ind, Y_ind_per_class):
         print('Computing LDA parameters')
 
-        features = np.empty((self.dataset_size, self.total_hidden_width))
-        for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE, False):
+        features = np.empty((self.current_dataset_size, self.total_hidden_width))
+        for batch in batch_iterator_with_indices(X, Y, BATCH_SIZE, False):
             feed_dict = {self.nn_input_pl: batch[0], self.is_training: False}
             features[batch[2]] = self.feature_layer.eval(feed_dict=feed_dict)
         features = np.reshape(features, (-1, self.n_blocks, self.block_width))
@@ -853,12 +899,12 @@ class Model:
             inv_covariance = None
 
             # initially select random subset of samples
-            keep_arr = np.random.binomial(1, 0.5, self.dataset_size).astype(bool)
+            keep_arr = np.random.binomial(1, 0.5, self.current_dataset_size).astype(bool)
             for i in range(self.update_param + 1):
                 sess.run(self.reset_class_feature_sums_counts_and_covariance_op)
 
                 # compute class feature means
-                for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
+                for batch in batch_iterator_with_indices(X, Y, BATCH_SIZE * 8, False):
                     feed_dict = {self.features_pl: block_features[batch[2]],
                                  self.labels_pl: batch[1],
                                  self.class_feature_ops_keep_array_pl: keep_arr[batch[2]]}
@@ -870,7 +916,7 @@ class Model:
                 class_feature_means = sums / counts.reshape((-1, 1))
 
                 # compute class feature covariance matrices
-                for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
+                for batch in batch_iterator_with_indices(X, Y, BATCH_SIZE * 8, False):
                     feed_dict = {self.features_pl: block_features[batch[2]], self.labels_pl: batch[1],
                                  self.class_feature_means_pl: class_feature_means,
                                  self.class_feature_ops_keep_array_pl: keep_arr[batch[2]]}
@@ -897,8 +943,8 @@ class Model:
                       np.linalg.svd(covariance)[1][-1])
 
                 # compute Mahalanobis distance based anomaly scores
-                mahalanobis_distances = np.empty(self.dataset_size)
-                for batch in batch_iterator_with_indices(X_augmented, Y, BATCH_SIZE * 8, False):
+                mahalanobis_distances = np.empty(self.current_dataset_size)
+                for batch in batch_iterator_with_indices(X, Y, BATCH_SIZE * 8, False):
                     feed_dict = {self.features_pl: block_features[batch[2]],
                                  self.class_feature_means_pl: class_feature_means,
                                  self.class_inv_covariances_pl: class_inv_covariances,
