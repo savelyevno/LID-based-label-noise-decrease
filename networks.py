@@ -103,47 +103,71 @@ def build_mnist(x, is_training, n_blocks, block_width):
     with tf.name_scope('pool2'):
         h_pool2 = max_pool_2x2(h_conv2)
 
-    # Fully connected layer 1 -- after 2 round of downsampling, our 28x28 image
-    # is down to 7x7x64 feature maps -- maps this to 128 lid_features.
-    with tf.name_scope('fc1'):
-        h_pool2_flat = tf.reshape(h_pool2, [-1, 7 * 7 * 64])
+    if n_blocks == 1:
+        # Fully connected layer 1 -- after 2 round of downsampling, our 28x28 image
+        # is down to 7x7x64 feature maps -- maps this to 128 lid_features.
+        with tf.name_scope('fc1'):
+            W_fc1 = weight_variable([7 * 7 * 64, block_width])
+            b_fc1 = bias_variable([block_width])
 
-        Ws_fc1 = []
-        bs_fc1 = []
-        hs_fc1 = []
-        acts_fc1 = []
-        for i in range(n_blocks):
-            Ws_fc1.append(weight_variable([7 * 7 * 64, block_width], 'W_' + str(i + 1)))
-            bs_fc1.append(bias_variable([block_width], 'b_' + str(i + 1)))
-            h = tf.matmul(h_pool2_flat, Ws_fc1[i]) + bs_fc1[i]
-            bn_h = tf.identity(batch_norm(h, is_training), name='bn_' + str(i + 1))
-            hs_fc1.append(bn_h)
-            a = tf.nn.relu(bn_h, name='relu_' + str(i + 1))
-            acts_fc1.append(a)
+            h_pool2_flat = tf.reshape(h_pool2, [-1, 7 * 7 * 64])
+            a_fc1 = tf.matmul(h_pool2_flat, W_fc1) + b_fc1
+            b_norm_fc1 = tf.identity(batch_norm(a_fc1, is_training), name='pre_lid_input')
+            h_fc1 = tf.nn.relu(b_norm_fc1, name='lid_input')
 
-        h_fc1 = tf.reshape(tf.stack(hs_fc1, 1), (-1, block_width * n_blocks), name='pre_lid_input')
-        a_fc1 = tf.nn.relu(h_fc1, name='lid_input')
+        # Map the 1024 lid_features to 10 classes, one for each digit
+        with tf.name_scope('fc2'):
+            W_fc2 = weight_variable([block_width, N_CLASSES])
+            b_fc2 = bias_variable([10])
 
-    Ws_fc2 = []
-    bs_fc2 = []
-    logits_fc2 = []
+            y_conv = tf.identity(tf.matmul(h_fc1, W_fc2) + b_fc2, name='logits')
 
-    # Map the 1024 lid_features to 10 classes, one for each digit
-    with tf.name_scope('fc2'):
-        for i in range(n_blocks):
-            Ws_fc2.append(weight_variable([block_width, N_CLASSES], 'W_' + str(i + 1)))
-            bs_fc2.append(bias_variable([N_CLASSES], 'b_' + str(i + 1)))
-            logits_fc2.append(tf.identity(tf.matmul(acts_fc1[i], Ws_fc2[i]) + bs_fc2[i], 'logits_' + str(i + 1)))
+            preds = tf.nn.softmax(y_conv, -1)
 
-        block_w = tf.reshape(tf.one_hot(tf.random_uniform((batch_size,), 0, n_blocks, dtype=tf.int32), n_blocks),
-                             (batch_size, n_blocks, 1))
+        return b_norm_fc1, h_fc1, y_conv, preds
 
-        blocks_logits = tf.stack(logits_fc2, 1)
-        preds = tf.reduce_mean(tf.nn.softmax(blocks_logits), 1)
+    else:
+        # Fully connected layer 1 -- after 2 round of downsampling, our 28x28 image
+        # is down to 7x7x64 feature maps -- maps this to 128 lid_features.
+        with tf.name_scope('fc1'):
+            h_pool2_flat = tf.reshape(h_pool2, [-1, 7 * 7 * 64])
 
-        logits = tf.reduce_sum(blocks_logits * block_w, 1, name='logits')
+            Ws_fc1 = []
+            bs_fc1 = []
+            hs_fc1 = []
+            acts_fc1 = []
+            for i in range(n_blocks):
+                Ws_fc1.append(weight_variable([7 * 7 * 64, block_width], 'W_' + str(i + 1)))
+                bs_fc1.append(bias_variable([block_width], 'b_' + str(i + 1)))
+                h = tf.matmul(h_pool2_flat, Ws_fc1[i]) + bs_fc1[i]
+                bn_h = tf.identity(batch_norm(h, is_training), name='bn_' + str(i + 1))
+                hs_fc1.append(bn_h)
+                a = tf.nn.relu(bn_h, name='relu_' + str(i + 1))
+                acts_fc1.append(a)
 
-    return h_fc1, a_fc1, logits, preds
+            h_fc1 = tf.reshape(tf.stack(hs_fc1, 1), (-1, block_width * n_blocks), name='pre_lid_input')
+            a_fc1 = tf.nn.relu(h_fc1, name='lid_input')
+
+        Ws_fc2 = []
+        bs_fc2 = []
+        logits_fc2 = []
+
+        # Map the 1024 lid_features to 10 classes, one for each digit
+        with tf.name_scope('fc2'):
+            for i in range(n_blocks):
+                Ws_fc2.append(weight_variable([block_width, N_CLASSES], 'W_' + str(i + 1)))
+                bs_fc2.append(bias_variable([N_CLASSES], 'b_' + str(i + 1)))
+                logits_fc2.append(tf.identity(tf.matmul(acts_fc1[i], Ws_fc2[i]) + bs_fc2[i], 'logits_' + str(i + 1)))
+
+            block_w = tf.reshape(tf.one_hot(tf.random_uniform((batch_size,), 0, n_blocks, dtype=tf.int32), n_blocks),
+                                 (batch_size, n_blocks, 1))
+
+            blocks_logits = tf.stack(logits_fc2, 1)
+            preds = tf.reduce_mean(tf.nn.softmax(blocks_logits), 1)
+
+            logits = tf.reduce_sum(blocks_logits * block_w, 1, name='logits')
+
+        return h_fc1, a_fc1, logits, preds
 
 
 def build_cifar_10(x, is_training, n_blocks, block_width):
@@ -206,40 +230,59 @@ def build_cifar_10(x, is_training, n_blocks, block_width):
     with tf.name_scope('flatten'):
         h_flattened = tf.reshape(h_pool3, [-1, 4 * 4 * 196])
 
-    with tf.name_scope('fc1'):
-        Ws_fc1 = []
-        bs_fc1 = []
-        hs_fc1 = []
-        acts_fc1 = []
-        for i in range(n_blocks):
-            Ws_fc1.append(weight_variable([4 * 4 * 196, block_width], 'W_' + str(i + 1)))
-            bs_fc1.append(bias_variable([block_width], 'b_' + str(i + 1)))
-            h = tf.matmul(h_flattened, Ws_fc1[i]) + bs_fc1[i]
-            bn_h = tf.identity(batch_norm(h, is_training), name='bn_' + str(i + 1))
-            hs_fc1.append(bn_h)
-            a = tf.nn.relu(bn_h, name='relu_' + str(i + 1))
-            acts_fc1.append(a)
+    if n_blocks == 1:
+        with tf.name_scope('fc1'):
+            W_fc1 = weight_variable([4 * 4 * 196, block_width])
+            b_fc1 = bias_variable([block_width])
 
-        h_fc1 = tf.reshape(tf.stack(hs_fc1, 1), (-1, block_width * n_blocks), name='pre_lid_input')
-        a_fc1 = tf.nn.relu(h_fc1, name='lid_input')
+            a_fc1 = tf.matmul(h_flattened, W_fc1) + b_fc1
+            normed_a_fc1 = tf.identity(batch_norm(a_fc1, is_training), name='pre_lid_input')
+            h_fc1 = tf.nn.relu(normed_a_fc1, name='lid_input')
 
-    Ws_fc2 = []
-    bs_fc2 = []
-    logits_fc2 = []
+        with tf.name_scope('fc2'):
+            W_fc2 = weight_variable([block_width, N_CLASSES])
+            b_fc2 = bias_variable([N_CLASSES])
 
-    # Map the 1024 lid_features to 10 classes, one for each digit
-    with tf.name_scope('fc2'):
-        for i in range(n_blocks):
-            Ws_fc2.append(weight_variable([block_width, N_CLASSES], 'W_' + str(i + 1)))
-            bs_fc2.append(bias_variable([N_CLASSES], 'b_' + str(i + 1)))
-            logits_fc2.append(tf.identity(tf.matmul(acts_fc1[i], Ws_fc2[i]) + bs_fc2[i], 'logits_' + str(i + 1)))
+            a_fc2 = tf.identity(tf.matmul(h_fc1, W_fc2) + b_fc2, name='logits')
 
-        block_w = tf.reshape(tf.one_hot(tf.random_uniform((batch_size,), 0, n_blocks, dtype=tf.int32), n_blocks),
-                             (batch_size, n_blocks, 1))
+            preds = tf.nn.softmax(a_fc2, -1)
 
-        blocks_logits = tf.stack(logits_fc2, 1)
-        preds = tf.reduce_mean(tf.nn.softmax(blocks_logits), 1)
+        return normed_a_fc1, h_fc1, a_fc2, preds
+    else:
+        with tf.name_scope('fc1'):
+            Ws_fc1 = []
+            bs_fc1 = []
+            hs_fc1 = []
+            acts_fc1 = []
+            for i in range(n_blocks):
+                Ws_fc1.append(weight_variable([4 * 4 * 196, block_width], 'W_' + str(i + 1)))
+                bs_fc1.append(bias_variable([block_width], 'b_' + str(i + 1)))
+                h = tf.matmul(h_flattened, Ws_fc1[i]) + bs_fc1[i]
+                bn_h = tf.identity(batch_norm(h, is_training), name='bn_' + str(i + 1))
+                hs_fc1.append(bn_h)
+                a = tf.nn.relu(bn_h, name='relu_' + str(i + 1))
+                acts_fc1.append(a)
 
-        logits = tf.reduce_sum(blocks_logits * block_w, 1, name='logits')
+            h_fc1 = tf.reshape(tf.stack(hs_fc1, 1), (-1, block_width * n_blocks), name='pre_lid_input')
+            a_fc1 = tf.nn.relu(h_fc1, name='lid_input')
 
-    return h_fc1, a_fc1, logits, preds
+        Ws_fc2 = []
+        bs_fc2 = []
+        logits_fc2 = []
+
+        # Map the 1024 lid_features to 10 classes, one for each digit
+        with tf.name_scope('fc2'):
+            for i in range(n_blocks):
+                Ws_fc2.append(weight_variable([block_width, N_CLASSES], 'W_' + str(i + 1)))
+                bs_fc2.append(bias_variable([N_CLASSES], 'b_' + str(i + 1)))
+                logits_fc2.append(tf.identity(tf.matmul(acts_fc1[i], Ws_fc2[i]) + bs_fc2[i], 'logits_' + str(i + 1)))
+
+            block_w = tf.reshape(tf.one_hot(tf.random_uniform((batch_size,), 0, n_blocks, dtype=tf.int32), n_blocks),
+                                 (batch_size, n_blocks, 1))
+
+            blocks_logits = tf.stack(logits_fc2, 1)
+            preds = tf.reduce_mean(tf.nn.softmax(blocks_logits), 1)
+
+            logits = tf.reduce_sum(blocks_logits * block_w, 1, name='logits')
+
+        return h_fc1, a_fc1, logits, preds
