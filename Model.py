@@ -19,7 +19,7 @@ class Model:
     def __init__(self, dataset_name, model_name, update_mode, update_param, n_epochs, lr_segments=None,
                  log_mask=0, lid_use_pre_relu=False, lda_use_pre_relu=True,
                  n_blocks=1, block_width=256,
-                 n_label_resets=0, n_epochs_to_transition=None, min_alpha=None, cut_train_set=False):
+                 n_label_resets=0, cut_train_set=False):
         """
 
         :param dataset_name:         dataset name: mnist/cifar-10
@@ -45,9 +45,7 @@ class Model:
         self.n_blocks = n_blocks
         self.n_epochs = n_epochs
         self.lr_segments = lr_segments
-        self.n_epochs_to_transition = n_epochs_to_transition
         self.n_label_resets = n_label_resets
-        self.min_alpha = min_alpha
         self.cut_train_set = cut_train_set
 
         self.block_width = block_width
@@ -647,77 +645,70 @@ class Model:
                     #
 
                     if turning_rel_epoch != -1:
-                    # if True:
-                        if n_label_resets_done < self.n_label_resets:
-                            alpha_value = 1 - (1 - self.min_alpha) * (i_epoch_rel - turning_rel_epoch) / \
-                                              max(0.9, self.n_epochs_to_transition)
-                        # elif self.n_label_resets == 0:
-                        else:
-                            alpha_value = np.exp(
-                                -(i_epoch_rel / self.n_epochs) * (lid_per_epoch[-1] / np.min(lid_per_epoch[:-1])))
+                        alpha_value = np.exp(
+                            -(i_epoch_rel / self.n_epochs) * (lid_per_epoch[-1] / np.min(lid_per_epoch[:-1])))
                         print('\nnext alpha value:', alpha_value)
 
-                        if n_label_resets_done < self.n_label_resets and alpha_value < self.min_alpha - EPS:
-                        # if True:
-                            print('alpha reached min value, resetting current labels')
-
-                            Y_current_new = np.empty((self.current_dataset_size, N_CLASSES), np.float32)
-                            for batch in batch_iterator_with_indices(X_augmented, Y_current, BATCH_SIZE, False):
-                                feed_dict = {self.nn_input_pl: batch[0], self.is_training: False}
-                                if self.update_mode == 2:
-                                    feed_dict[self.block_class_feature_means_pl] = self.block_class_feature_means
-                                    feed_dict[self.block_inv_covariance_pl] = self.block_inv_covariances
-                                new_labels = self.new_labels_op.eval(feed_dict)
-                                Y_current_new[batch[2]] = new_labels
-
-                            if self.cut_train_set:
-                                Y_current_cls_ind_new = np.argmax(Y_current_new, 1)
-                                are_labels_equal_ind = np.where(Y_current_cls_ind == Y_current_cls_ind_new)[0]
-
-                                X_current = np.array(X_current[are_labels_equal_ind])
-                                X_current_ind = np.array(X_current_ind[are_labels_equal_ind])
-
-                                Y_current = np.array(Y_current_new[are_labels_equal_ind])
-                                Y_current_cls_ind = np.array(Y_current_cls_ind_new[are_labels_equal_ind])
-
-                                Y0_current_cls_ind = np.array(Y0_cls_ind[X_current_ind])
-                                Y0_current = np.array(Y0[X_current_ind])
-
-                                self.current_dataset_size = X_current.shape[0]
-                                self.is_sample_clean = (Y_current_cls_ind == Y0_current_cls_ind).astype(int)
-
-                                Y_current_ind_per_class = [[] for c in range(N_CLASSES)]
-                                for i in range(self.current_dataset_size):
-                                    Y_current_ind_per_class[Y_current_cls_ind[i]].append(i)
-
-                                if self.data_augmenter is not None:
-                                    self.data_augmenter.fit(X_current)
-                                    X_augmented_iter = self.data_augmenter.flow(X_current,
-                                                                                batch_size=self.current_dataset_size,
-                                                                                shuffle=False)
-
-                                print('new train set size: %d; clean: %d; noisy: %d' %
-                                      (self.current_dataset_size,
-                                       self.is_sample_clean.sum(),
-                                       self.current_dataset_size - self.is_sample_clean.sum())
-                                      )
-                            else:
-                                Y_current = np.array(Y_current_new)
-                                Y_current_ind = np.argmax(Y_current, 1)
-                                Y_current_ind_per_class = [[] for c in range(N_CLASSES)]
-                                for i in range(self.current_dataset_size):
-                                    Y_current_ind_per_class[Y_current_ind[i]].append(i)
-                                self.is_sample_clean = (Y_current_ind == Y0_cls_ind).astype(int)
-
-                            alpha_value = 1
-                            n_label_resets_done += 1
-
-                            i_epoch_rel = 0
-                            turning_rel_epoch = -1
-                            lid_per_epoch = []
-                            # print('resetting epoch number')
-
                     sess.run(self.alpha_var.assign(alpha_value))
+
+                if i_epoch_rel == self.n_epochs and n_label_resets_done < self.n_label_resets:
+                    print('reached the end, resetting current labels')
+
+                    Y_current_new = np.empty((self.current_dataset_size, N_CLASSES), np.float32)
+                    for batch in batch_iterator_with_indices(X_augmented, Y_current, BATCH_SIZE, False):
+                        feed_dict = {self.nn_input_pl: batch[0], self.is_training: False}
+                        if self.update_mode == 2:
+                            feed_dict[self.block_class_feature_means_pl] = self.block_class_feature_means
+                            feed_dict[self.block_inv_covariance_pl] = self.block_inv_covariances
+                        new_labels = self.new_labels_op.eval(feed_dict)
+                        Y_current_new[batch[2]] = new_labels
+
+                    if self.cut_train_set:
+                        Y_current_cls_ind_new = np.argmax(Y_current_new, 1)
+                        are_labels_equal_ind = np.where(Y_current_cls_ind == Y_current_cls_ind_new)[0]
+
+                        X_current = np.array(X_current[are_labels_equal_ind])
+                        X_current_ind = np.array(X_current_ind[are_labels_equal_ind])
+
+                        Y_current = np.array(Y_current_new[are_labels_equal_ind])
+                        Y_current_cls_ind = np.array(Y_current_cls_ind_new[are_labels_equal_ind])
+
+                        Y0_current_cls_ind = np.array(Y0_cls_ind[X_current_ind])
+                        Y0_current = np.array(Y0[X_current_ind])
+
+                        self.current_dataset_size = X_current.shape[0]
+                        self.is_sample_clean = (Y_current_cls_ind == Y0_current_cls_ind).astype(int)
+
+                        Y_current_ind_per_class = [[] for c in range(N_CLASSES)]
+                        for i in range(self.current_dataset_size):
+                            Y_current_ind_per_class[Y_current_cls_ind[i]].append(i)
+
+                        if self.data_augmenter is not None:
+                            self.data_augmenter.fit(X_current)
+                            X_augmented_iter = self.data_augmenter.flow(X_current,
+                                                                        batch_size=self.current_dataset_size,
+                                                                        shuffle=False)
+
+                        print('new train set size: %d; clean: %d; noisy: %d' %
+                              (self.current_dataset_size,
+                               self.is_sample_clean.sum(),
+                               self.current_dataset_size - self.is_sample_clean.sum())
+                              )
+                    else:
+                        Y_current = np.array(Y_current_new)
+                        Y_current_ind = np.argmax(Y_current, 1)
+                        Y_current_ind_per_class = [[] for c in range(N_CLASSES)]
+                        for i in range(self.current_dataset_size):
+                            Y_current_ind_per_class[Y_current_ind[i]].append(i)
+                        self.is_sample_clean = (Y_current_ind == Y0_cls_ind).astype(int)
+
+                    alpha_value = 1
+                    n_label_resets_done += 1
+
+                    i_epoch_rel = 0
+                    turning_rel_epoch = -1
+                    lid_per_epoch = []
+                    # print('resetting epoch number')
 
                 #
                 # SAVE MODEL
