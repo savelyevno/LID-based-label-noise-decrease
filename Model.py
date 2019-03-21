@@ -450,6 +450,9 @@ class Model:
                 # TRAIN
                 #
 
+                if self.update_mode == 1 or self.update_mode == 2:
+                    sess.run(self.alpha_var.assign(alpha_value))
+
                 print('starting training...')
 
                 for batch in batch_iterator_with_indices(X_augmented, Y_current, BATCH_SIZE):
@@ -663,8 +666,6 @@ class Model:
                         alpha_value = np.exp(
                             -(i_epoch_rel / self.n_epochs) * (lid_per_epoch[-1] / np.min(lid_per_epoch[:-1])))
                         print('\nnext alpha value:', alpha_value)
-
-                    sess.run(self.alpha_var.assign(alpha_value))
 
                 if i_epoch_rel == self.n_epochs and n_label_resets_done < self.n_label_resets:
                     print('reached the end, resetting current labels')
