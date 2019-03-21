@@ -63,11 +63,13 @@ def mnist_read_images_write_dataset(folder, output_name):
     print('done writing')
 
 
-def cifar_10_convert():
+def cifar10_convert():
+    dataset_name = 'cifar-10'
+
     def append_data(filename, X, Y):
-        with open('datasets/cifar-10/raw/' + filename, 'rb') as f:
+        with open('datasets/{}/raw/{}'.format(dataset_name, filename), 'rb') as f:
             dict_data = pickle.load(f, encoding='bytes')
-            X = np.vstack((X, dict_data[b'data']))
+            X = np.array(np.vstack((X, dict_data[b'data'])), dtype=np.float32)
             y = dict_data[b'labels']
 
         T = np.zeros((len(y), 10))
@@ -78,27 +80,53 @@ def cifar_10_convert():
 
     X_train = np.empty((0, 3072))
     Y_train = np.empty((0, 10), dtype=int)
-    for i in range(1, 6):
+    for i in range(1, 5 + 1):
         X_train, Y_train = append_data('data_batch_' + str(i), X_train, Y_train)
 
     X_test = np.empty((0, 3072))
     Y_test = np.empty((0, 10), dtype=int)
     X_test, Y_test = append_data('test_batch', X_test, Y_test)
 
-    def proccess_X(X):
-        X = np.transpose(X.reshape((-1, 3, 32, 32)), [0, 2, 3, 1]) / 255.0
-        mean = np.mean(X, axis=0)
-        # std = np.std(X)
-        X -= mean
+    X_train = np.transpose(X_train.reshape((-1, 3, 32, 32)), [0, 2, 3, 1]) / 255
+    mean = np.mean(X_train, axis=0)
+    X_train -= mean
 
-        return X
+    X_test = np.transpose(X_test.reshape((-1, 3, 32, 32)), [0, 2, 3, 1]) / 255
+    X_test -= mean
 
-    X_train = proccess_X(X_train)
-    X_test = proccess_X(X_test)
-
-    with open('datasets/cifar-10/train.pkl', 'wb') as f:
+    with open('datasets/{}/train.pkl'.format(dataset_name), 'wb') as f:
         pickle.dump((X_train, Y_train), f)
-    with open('datasets/cifar-10/test.pkl', 'wb') as f:
+    with open('datasets/{}/test.pkl'.format(dataset_name), 'wb') as f:
+        pickle.dump((X_test, Y_test), f)
+
+
+def cifar100_convert():
+    dataset_name = 'cifar-100'
+
+    def read_data(filename):
+        with open('datasets/{}/raw/{}'.format(dataset_name, filename), 'rb') as f:
+            dict_data = pickle.load(f, encoding='bytes')
+            X = np.array(dict_data[b'data'], dtype=np.float32)
+            y = dict_data[b'fine_labels']
+
+        Y = np.zeros((len(y), 100))
+        Y[np.arange(len(y)), y] = 1
+
+        return X, Y
+
+    X_train, Y_train = read_data('train')
+    X_test, Y_test = read_data('test')
+
+    X_train = np.transpose(X_train.reshape((-1, 3, 32, 32)), [0, 2, 3, 1]) / 255
+    mean = np.mean(X_train, axis=0)
+    X_train -= mean
+
+    X_test = np.transpose(X_test.reshape((-1, 3, 32, 32)), [0, 2, 3, 1]) / 255
+    X_test -= mean
+
+    with open('datasets/{}/train.pkl'.format(dataset_name), 'wb') as f:
+        pickle.dump((X_train, Y_train), f)
+    with open('datasets/{}/test.pkl'.format(dataset_name), 'wb') as f:
         pickle.dump((X_test, Y_test), f)
 
 
@@ -113,4 +141,5 @@ if __name__ == '__main__':
     #
     # write_dataset(name, X, Y)
 
-    cifar_10_convert()
+    # cifar10_convert()
+    cifar100_convert()

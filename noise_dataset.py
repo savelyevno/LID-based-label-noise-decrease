@@ -7,12 +7,13 @@ def introduce_symmetric_noise(Y, noise_ratio, seed=None):
     if seed is None:
         seed = 0
 
-    np.random.seed(seed)
-
     N = Y.shape[0]
     M = int(round(N * noise_ratio))
 
+    after_seed = np.random.randint(1 << 30)
+    np.random.seed(seed)
     perm = np.random.permutation(N)[:M]
+    np.random.seed(after_seed)
 
     for it in perm:
         old_label = np.argmax(Y[it])
