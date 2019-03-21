@@ -16,7 +16,7 @@ if __name__ == '__main__':
                            0 * (1 << 2) +
                            0 * (1 << 3)
                   )
-    model.train('train20')
+    model.train(noise_ratio=0.2, noise_seed=0)
 
     # model_name = 'clean_none_lr_times_1e-3_4_block16'
     # # model_name = 'clean_paper_lr_1e-5_30_1e-6'

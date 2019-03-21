@@ -13,6 +13,7 @@ from Timer import timer
 from preprocessing import read_dataset
 from batch_iterate import batch_iterator, batch_iterator_with_indices
 from tools import bitmask_contains, softmax
+from noise_dataset import introduce_symmetric_noise
 
 
 class Model:
@@ -225,13 +226,13 @@ class Model:
         with tf.name_scope('adam_optimizer'):
             self.train_step = tf.train.AdamOptimizer(self.lr).minimize(self.cross_entropy)
 
-    def train(self, train_dataset_type='train'):
+    def train(self, train_dataset_type='train', noise_ratio=0, noise_seed=None):
         #
         # LOAD
         #
 
-        X, Y = read_dataset(name=self.dataset_name, type=train_dataset_type)
-        X0, Y0 = read_dataset(name=self.dataset_name, type='train')
+        X, Y0 = read_dataset(name=self.dataset_name, type=train_dataset_type)
+        Y = introduce_symmetric_noise(Y0, noise_ratio, noise_seed)
 
         Y_ind = np.argmax(Y, 1)
         Y0_cls_ind = np.argmax(Y0, 1)

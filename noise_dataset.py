@@ -3,12 +3,13 @@ import numpy as np
 from preprocessing import write_dataset, read_dataset
 
 
-def introduce_symmetric_noise(X, Y, noise_ratio, seed=None):
-    if seed is not None:
-        np.random.seed(seed)
+def introduce_symmetric_noise(Y, noise_ratio, seed=None):
+    if seed is None:
+        seed = 0
 
-    N = X.shape[0]
+    np.random.seed(seed)
 
+    N = Y.shape[0]
     M = int(round(N * noise_ratio))
 
     perm = np.random.permutation(N)[:M]
@@ -23,12 +24,12 @@ def introduce_symmetric_noise(X, Y, noise_ratio, seed=None):
         Y[it][old_label] = 0
         Y[it][new_label] = 1
 
-    return X, Y
+    return Y
 
 
 if __name__ == '__main__':
     dataset_name = 'mnist'
     # dataset_name = 'cifar-10'
-    X, Y = read_dataset(dataset_name, 'train')
-    introduce_symmetric_noise(X, Y, 0.6)
-    write_dataset(dataset_name, 'train60', X, Y)
+    # X, Y = read_dataset(dataset_name, 'train')
+    # introduce_symmetric_noise(X, Y, 0.6)
+    # write_dataset(dataset_name, 'train60', X, Y)
