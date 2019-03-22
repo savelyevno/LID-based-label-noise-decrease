@@ -18,7 +18,7 @@ from noise_dataset import introduce_symmetric_noise
 
 
 class Model:
-    def __init__(self, dataset_name, model_name, update_mode, update_param, n_epochs, lr_segments=None,
+    def __init__(self, dataset_name, model_name, update_mode, init_epochs, n_epochs, reg_coef, lr_segments=None,
                  log_mask=0, lid_use_pre_relu=False, lda_use_pre_relu=True,
                  n_blocks=1, block_width=256,
                  n_label_resets=0, cut_train_set=False):
@@ -29,7 +29,6 @@ class Model:
         :param update_mode:     0: vanilla
                                 1: as in the LID paper
                                 2: lda
-        :param update_param:    for update_mode = 2: number of sampling iterations
         :param log_mask:    in case it contains
                                     0th bit: logs LID data from the paper
                                     1st bit: logs relu features per element
@@ -39,7 +38,6 @@ class Model:
 
         self.dataset_name = dataset_name
         self.update_mode = update_mode
-        self.update_param = update_param
         self.lid_use_pre_relu = lid_use_pre_relu
         self.lda_use_pre_relu = lda_use_pre_relu
         self.log_mask = log_mask
@@ -49,6 +47,8 @@ class Model:
         self.lr_segments = lr_segments
         self.n_label_resets = n_label_resets
         self.cut_train_set = cut_train_set
+        self.init_epochs = init_epochs
+        self.reg_coef = reg_coef
 
         self.block_width = block_width
         self.total_hidden_width = block_width * n_blocks
@@ -87,6 +87,7 @@ class Model:
         # BUILD NETWORK
         #
 
+        reg_loss_unscaled = 0
         if self.dataset_name == 'mnist':
             self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds = build_mnist(self.nn_input_pl,
                                                                                             self.is_training,
@@ -99,8 +100,9 @@ class Model:
                                                                                                self.block_width)
 
         elif self.dataset_name == 'cifar-100':
-            self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds = build_cifar_100(self.nn_input_pl,
-                                                                                                self.is_training)
+            self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds, reg_loss_unscaled = build_cifar_100(
+                self.nn_input_pl,
+                self.is_training)
 
         #
         # PREPARE FOR LABEL CHANGING
@@ -197,10 +199,9 @@ class Model:
                     labels=self.modified_labels_op,
                     logits=self.logits)
 
-            self.reg_loss = 0
-            cross_entropy += self.reg_loss
+            self.reg_loss = tf.identity(2 * self.reg_coef * reg_loss_unscaled, 'reg_loss')
 
-        self.cross_entropy = tf.reduce_mean(cross_entropy)
+        self.cross_entropy = tf.reduce_mean(cross_entropy) + self.reg_loss
 
         #
         # CREATE ACCURACY
@@ -647,7 +648,7 @@ class Model:
                     # CHECK FOR STOPPING INIT PERIOD
                     #
 
-                    if turning_rel_epoch == -1 and len(lid_per_epoch) > EPOCH_WINDOW:
+                    if turning_rel_epoch == -1 and len(lid_per_epoch) > self.init_epochs + EPOCH_WINDOW:
                         last_w_lids = lid_per_epoch[-EPOCH_WINDOW - 1: -1]
 
                         lid_check_value = lid_per_epoch[-1] - np.mean(last_w_lids) - 2 * np.std(last_w_lids)
@@ -909,7 +910,7 @@ class Model:
 
             # initially select random subset of samples
             keep_arr = np.random.binomial(1, 0.5, self.current_dataset_size).astype(bool)
-            for i in range(self.update_param + 1):
+            for i in range(3 + 1):
                 sess.run(self.reset_class_feature_sums_counts_and_covariance_op)
 
                 # compute class feature means
