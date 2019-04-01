@@ -2,7 +2,7 @@ import os
 import numpy as np
 from PIL import Image
 import pickle
-import matplotlib.pyplot as plt
+import tensorflow as tf
 
 
 input_folder_prefix = '../mnist/'
@@ -130,6 +130,57 @@ def cifar100_convert():
         pickle.dump((X_test, Y_test), f)
 
 
+def create_validation_set(dataset_name, n_samples_per_class, augmentation_multiplier, random_seed=0):
+    X, Y = read_dataset(name=dataset_name, type='train')
+
+    np.random.seed(random_seed)
+
+    Y_ind = np.argmax(Y, 1)
+    n_classes = Y_ind.max() + 1
+    N = X.shape[0]
+
+    Y_ind_per_class = [[] for c in range(n_classes)]
+    for i in np.random.permutation(N):
+        Y_ind_per_class[Y_ind[i]].append(i)
+
+    val_Y_ind_per_class = [Y_ind_per_class[c][:n_samples_per_class] for c in range(n_classes)]
+    val_ind = []
+    for lst in val_Y_ind_per_class:
+        val_ind.extend(lst)
+
+    all_except_val_ind = []
+    val_ind_set = set(val_ind)
+    for i in range(N):
+        if i not in val_ind_set:
+            all_except_val_ind.append(i)
+
+    X_new_train = X[all_except_val_ind]
+    Y_new_train = Y[all_except_val_ind]
+
+    X_val = X[val_ind]
+    Y_val = Y[val_ind]
+
+    X_val_res = np.copy(X_val)
+    Y_val_res = np.copy(Y_val)
+
+    if augmentation_multiplier > 0:
+        data_augmenter = tf.keras.preprocessing.image.ImageDataGenerator(
+            width_shift_range=0.2,
+            height_shift_range=0.2,
+            horizontal_flip=True)
+        data_augmenter.fit(X_val)
+        X_augmented_iter = data_augmenter.flow(X_val, batch_size=X_val.shape[0], shuffle=False)
+
+        for i in range(augmentation_multiplier):
+            X_augmented = X_augmented_iter.next()
+
+            X_val_res = np.append(X_val_res, X_augmented, axis=0)
+            Y_val_res = np.append(Y_val_res, Y_val, axis=0)
+
+    write_dataset(dataset_name, 'train_without_val', X_new_train, Y_new_train)
+    write_dataset(dataset_name, 'validation', X_val, Y_val)
+
+
 if __name__ == '__main__':
     # mnist_read_images_write_dataset('trainingSet', 'train')
     # mnist_read_images_write_dataset('testSet', 'test')
@@ -142,4 +193,6 @@ if __name__ == '__main__':
     # write_dataset(name, X, Y)
 
     # cifar10_convert()
-    cifar100_convert()
+    # cifar100_convert()
+
+    create_validation_set('cifar-10', 100, 1)

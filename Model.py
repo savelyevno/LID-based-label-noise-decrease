@@ -87,7 +87,7 @@ class Model:
         # BUILD NETWORK
         #
 
-        reg_loss_unscaled = 0
+        reg_loss_unscaled = 0.0
         if self.dataset_name == 'mnist':
             self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds = build_mnist(self.nn_input_pl,
                                                                                             self.is_training,
@@ -237,7 +237,7 @@ class Model:
         with tf.name_scope('adam_optimizer'):
             self.train_step = tf.train.AdamOptimizer(self.lr).minimize(self.cross_entropy)
 
-    def train(self, train_dataset_type='train', noise_ratio=0, noise_seed=None):
+    def train(self, train_dataset_type='train_without_val', noise_ratio=0, noise_seed=None):
         #
         # LOAD
         #
@@ -266,6 +266,7 @@ class Model:
         Y0_current = np.array(Y0)
 
         X_test, Y_test = read_dataset(name=self.dataset_name, type='test')
+        X_validation, Y_validation = read_dataset(name=self.dataset_name, type='validation')
 
         self._build()
 
@@ -282,8 +283,11 @@ class Model:
 
             test_accuracy_summary_scalar = tf.placeholder(tf.float32)
             test_accuracy_summary = tf.summary.scalar(name='test_accuracy', tensor=test_accuracy_summary_scalar)
+            validation_accuracy_summary_scalar = tf.placeholder(tf.float32)
+            validation_accuracy_summary = tf.summary.scalar(name='validation_accuracy',
+                                                            tensor=validation_accuracy_summary_scalar)
 
-            summaries_to_merge = [test_accuracy_summary]
+            summaries_to_merge = [test_accuracy_summary, validation_accuracy_summary]
 
             modified_labels_accuracy_summary_scalar = None
             new_labels_accuracy_summary_scalar = None
@@ -577,31 +581,21 @@ class Model:
                             arr=logits_per_epoch_per_element)
 
                 #
-                # TEST ACCURACY
+                # TEST/VALIDATION ACCURACY
                 #
 
-                test_accuracy = 0
-                i_batch = -1
-                tested_cnt = 0
-                for batch in batch_iterator_with_indices(X_test, Y_test, BATCH_SIZE, False):
-                    i_batch += 1
-
-                    feed_dict = {self.nn_input_pl: batch[0], self.labels_pl: batch[1], self.is_training: False}
-
-                    partial_accuracy = self.accuracy.eval(feed_dict=feed_dict)
-
-                    test_batch_size = len(batch[0])
-                    test_accuracy = (tested_cnt * test_accuracy + partial_accuracy * test_batch_size) /\
-                                    (tested_cnt + test_batch_size)
-                    tested_cnt += test_batch_size
+                test_accuracy = self.calc_accuracy_on_dataset(X_test, Y_test)
+                validation_accuracy = self.calc_accuracy_on_dataset(X_validation, Y_validation)
 
                 print('\ntest accuracy after %dth epoch: %g' % (i_epoch_tot, test_accuracy))
+                print('validation accuracy after %dth epoch: %g' % (i_epoch_tot, validation_accuracy))
 
                 #
                 # WRITE PER EPOCH SUMMARIES
                 #
 
-                feed_dict = {test_accuracy_summary_scalar: test_accuracy}
+                feed_dict = {test_accuracy_summary_scalar: test_accuracy,
+                             validation_accuracy_summary_scalar: validation_accuracy}
 
                 if self.update_mode == 1 or self.update_mode == 2:
                     print('accuracy of modified labels compared to true labels on a train set: %g' %
@@ -979,3 +973,20 @@ class Model:
                                                        np.expand_dims(class_feature_means, 0), 0)
             self.block_inv_covariances = np.append(self.block_inv_covariances,
                                                    np.expand_dims(inv_covariance, 0), 0)
+
+    def calc_accuracy_on_dataset(self, X, Y):
+        accuracy = 0
+        i_batch = -1
+        cnt = 0
+        for batch in batch_iterator_with_indices(X, Y, BATCH_SIZE, False):
+            i_batch += 1
+
+            feed_dict = {self.nn_input_pl: batch[0], self.labels_pl: batch[1], self.is_training: False}
+
+            partial_accuracy = self.accuracy.eval(feed_dict=feed_dict)
+
+            batch_size = len(batch[0])
+            accuracy = (cnt * accuracy + partial_accuracy * batch_size) / (cnt + batch_size)
+            cnt += batch_size
+
+        return accuracy
