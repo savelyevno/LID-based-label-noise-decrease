@@ -3,18 +3,18 @@ from Model import Model
 
 if __name__ == '__main__':
     dataset_name = 'cifar-100'
-    model_name = '20_paper_ep200_init60_rst1_cut'
+    model_name = '20_paper_ep100_init30_rst1_cut_mod_last_false'
     print(dataset_name, model_name)
-    model = Model(dataset_name=dataset_name, model_name=model_name, n_epochs=200, reg_coef=1e-6,
+    model = Model(dataset_name=dataset_name, model_name=model_name, n_epochs=100, reg_coef=1e-6,
                   # block_width=256,
-                  lr_segments=[(0.4, 1e-2), (0.2, 1e-3), (0.2, 1e-4), (0.2, 1e-5)],
-                  # lr_segments=[(0.57, 1e-2), (0.14, 1e-3), (0.28, 1e-4)],
+                  # lr_segments=[(0.4, 1e-2), (0.2, 1e-3), (0.2, 1e-4), (0.2, 1e-5)],
+                  lr_segments=[(0.57, 1e-2), (0.14, 1e-3), (0.28, 1e-4)],
                   # lr_segments=[(0.8, 1e-2), (0.1, 1e-3), (0.1, 1e-4)],
                   # lr_segments=[(0.25, 1e-5), (0.75, 1e-6)],
                   # lid_use_pre_relu=False, lda_use_pre_relu=True,
                   update_mode=1,
-                  init_epochs=60,
-                  n_label_resets=1, cut_train_set=True,
+                  init_epochs=30,
+                  n_label_resets=1, cut_train_set=True, mod_labels_after_last_reset=False,
                   log_mask=1 * (1 << 0) +
                            0 * (1 << 1) +
                            0 * (1 << 2) +

@@ -21,7 +21,7 @@ class Model:
     def __init__(self, dataset_name, model_name, update_mode, init_epochs, n_epochs, reg_coef, lr_segments=None,
                  log_mask=0, lid_use_pre_relu=False, lda_use_pre_relu=True,
                  n_blocks=1, block_width=256,
-                 n_label_resets=0, cut_train_set=False):
+                 n_label_resets=0, cut_train_set=False, mod_labels_after_last_reset=True):
         """
 
         :param dataset_name:         dataset name: mnist/cifar-10/cifar-100
@@ -47,6 +47,7 @@ class Model:
         self.lr_segments = lr_segments
         self.n_label_resets = n_label_resets
         self.cut_train_set = cut_train_set
+        self.mod_labels_after_last_reset = mod_labels_after_last_reset
         self.init_epochs = init_epochs
         self.reg_coef = reg_coef
 
@@ -637,21 +638,22 @@ class Model:
                 summary_writer.add_summary(summary_str, i_step + 1)
                 summary_writer.flush()
 
-                if self.update_mode == 1 or self.update_mode == 2 or self.to_log(0):
+                if self.update_mode == 1 or self.update_mode == 2:
                     #
                     # CHECK FOR STOPPING INIT PERIOD
                     #
 
                     if turning_rel_epoch == -1 and len(lid_per_epoch) > self.init_epochs + EPOCH_WINDOW:
-                        last_w_lids = lid_per_epoch[-EPOCH_WINDOW - 1: -1]
+                        if self.mod_labels_after_last_reset or not(0 < self.n_label_resets == n_label_resets_done):
+                            last_w_lids = lid_per_epoch[-EPOCH_WINDOW - 1: -1]
 
-                        lid_check_value = lid_per_epoch[-1] - np.mean(last_w_lids) - 2 * np.std(last_w_lids)
+                            lid_check_value = lid_per_epoch[-1] - np.mean(last_w_lids) - 2 * np.std(last_w_lids)
 
-                        print('LID check:', lid_check_value)
+                            print('LID check:', lid_check_value)
 
-                        if lid_check_value > 0:
-                            turning_rel_epoch = i_epoch_rel - 1
-                            print('Turning point passed, starting using modified labels')
+                            if lid_check_value > 0:
+                                turning_rel_epoch = i_epoch_rel - 1
+                                print('Turning point passed, starting using modified labels')
 
                     #
                     # MODIFY ALPHA
