@@ -661,7 +661,8 @@ class Model:
 
                     if turning_rel_epoch != -1:
                         alpha_value = np.exp(
-                            -(i_epoch_rel / self.n_epochs) * (lid_per_epoch[-1] / np.min(lid_per_epoch[:-1])))
+                            -(i_epoch_rel / self.n_epochs) * (lid_per_epoch[-1] /
+                                                              np.min(lid_per_epoch[self.init_epochs:-1])))
                         print('\nnext alpha value:', alpha_value)
 
                 if i_epoch_rel == self.n_epochs and n_label_resets_done < self.n_label_resets:

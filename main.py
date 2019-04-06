@@ -3,7 +3,7 @@ from Model import Model
 
 if __name__ == '__main__':
     dataset_name = 'cifar-100'
-    model_name = '20_paper_ep100_init30_rst1_cut_mod_last_false'
+    model_name = '20_paper_ep100_init30_rst1_cut_mod_last_false_alpha_corr'
     print(dataset_name, model_name)
     model = Model(dataset_name=dataset_name, model_name=model_name, n_epochs=100, reg_coef=1e-6,
                   # block_width=256,
