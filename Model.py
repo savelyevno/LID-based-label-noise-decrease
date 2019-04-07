@@ -21,7 +21,7 @@ class Model:
     def __init__(self, dataset_name, model_name, update_mode, init_epochs, n_epochs, reg_coef, lr_segments=None,
                  log_mask=0, lid_use_pre_relu=False, lda_use_pre_relu=True,
                  n_blocks=1, block_width=256,
-                 n_label_resets=0, cut_train_set=False, mod_labels_after_last_reset=True):
+                 n_label_resets=0, cut_train_set=False, mod_labels_after_last_reset=True, use_loss_weights=False):
         """
 
         :param dataset_name:         dataset name: mnist/cifar-10/cifar-100
@@ -48,6 +48,7 @@ class Model:
         self.n_label_resets = n_label_resets
         self.cut_train_set = cut_train_set
         self.mod_labels_after_last_reset = mod_labels_after_last_reset
+        self.use_loss_weights = use_loss_weights
         self.init_epochs = init_epochs
         self.reg_coef = reg_coef
 
@@ -171,6 +172,8 @@ class Model:
         #
 
         with tf.name_scope('loss'):
+            self.loss_weights_pl = tf.placeholder(tf.float32, (None,), 'loss_weights')
+
             cross_entropy = None
 
             if self.update_mode == 0:
@@ -202,7 +205,7 @@ class Model:
 
             self.reg_loss = tf.identity(2 * self.reg_coef * reg_loss_unscaled, 'reg_loss')
 
-        self.cross_entropy = tf.reduce_mean(cross_entropy) + self.reg_loss
+        self.cross_entropy = self.reg_loss + tf.reduce_mean(cross_entropy * self.loss_weights_pl)
 
         #
         # CREATE ACCURACY
@@ -268,6 +271,8 @@ class Model:
 
         X_test, Y_test = read_dataset(name=self.dataset_name, type='test')
         X_validation, Y_validation = read_dataset(name=self.dataset_name, type='validation')
+
+        current_loss_weights = np.full((self.current_dataset_size,), 1, np.float32)
 
         self._build()
 
@@ -465,7 +470,8 @@ class Model:
                     i_step += 1
 
                     feed_dict = {self.nn_input_pl: batch[0], self.labels_pl: batch[1], self.is_training: True,
-                                 self.rel_epoch_pl: i_epoch_rel}
+                                 self.rel_epoch_pl: i_epoch_rel,
+                                 self.loss_weights_pl: current_loss_weights[batch[2]]}
 
                     if self.update_mode == 2:
                         feed_dict[self.LDA_labels_weight_pl] = self.alpha_var.eval(sess)
@@ -709,6 +715,39 @@ class Model:
                                self.current_dataset_size - self.is_sample_clean.sum())
                               )
                     else:
+                        if self.use_loss_weights:
+                            # Compute new loss weights
+
+                            new_loss_weights = np.empty((self.current_dataset_size,), np.float32)
+                            for batch in batch_iterator_with_indices(X_current, Y_current, BATCH_SIZE, False):
+                                feed_dict = {self.nn_input_pl: batch[0], self.labels_pl: batch[1],
+                                             self.is_training: False}
+                                if self.update_mode == 2:
+                                    feed_dict[self.block_class_feature_means_pl] = self.block_class_feature_means
+                                    feed_dict[self.block_inv_covariance_pl] = self.block_inv_covariances
+
+                                # preds = self.preds.eval(feed_dict, sess)
+                                # weights = np.sum(preds * batch[1], 1) * 3
+                                mod_labels = self.modified_labels_op.eval(feed_dict, sess)
+                                weights = np.sum(mod_labels * batch[1], 1) * 3
+
+                                # new_loss_weights[batch[2]] = np.clip(weights, 0, 1)
+                                new_loss_weights[batch[2]] = weights
+                            current_loss_weights = new_loss_weights
+
+                            def print_arr_stats(arr):
+                                print('\tMean:', arr.mean())
+                                print('\tStd:', arr.std())
+                                print('\tMin:', arr.min())
+                                print('\tMax:', arr.max())
+
+                            print('New loss weights stats:')
+                            print_arr_stats(current_loss_weights)
+                            print('New loss weight stats for clean samples:')
+                            print_arr_stats(current_loss_weights[np.nonzero(self.is_sample_clean)])
+                            print('New loss weight stats for noised samples:')
+                            print_arr_stats(current_loss_weights[np.nonzero(1 - self.is_sample_clean)])
+
                         Y_current = np.array(Y_current_new)
                         Y_current_ind = np.argmax(Y_current, 1)
                         Y_current_ind_per_class = [[] for c in range(self.n_classes)]
