@@ -177,7 +177,7 @@ class Model:
             cross_entropy = None
 
             if self.update_mode == 0:
-                self.new_labels_op = self.labels_pl
+                self.new_labels_op = tf.one_hot(tf.argmax(self.preds, 1), self.n_classes)
                 self.modified_labels_op = self.labels_pl
                 cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.labels_pl,
                                                                            logits=self.logits)
@@ -287,13 +287,23 @@ class Model:
             tf.summary.scalar(name='learning_rate', tensor=self.lr)
             summary = tf.summary.merge_all()
 
+            clean_train_accuracy_summary_scalar = tf.placeholder(tf.float32)
+            clean_train_accuracy_summary = tf.summary.scalar(name='clean_train_accuracy',
+                                                             tensor=clean_train_accuracy_summary_scalar)
+            clean_train_accuracy_on_clean_summary_scalar = tf.placeholder(tf.float32)
+            clean_train_accuracy_on_clean_summary = tf.summary.scalar(name='clean_train_accuracy_on_clean',
+                                                                    tensor=clean_train_accuracy_on_clean_summary_scalar)
+            clean_train_accuracy_on_noised_summary_scalar = tf.placeholder(tf.float32)
+            clean_train_accuracy_on_noised_summary = tf.summary.scalar(name='clean_train_accuracy_on_noised',
+                                                             tensor=clean_train_accuracy_on_noised_summary_scalar)
             test_accuracy_summary_scalar = tf.placeholder(tf.float32)
             test_accuracy_summary = tf.summary.scalar(name='test_accuracy', tensor=test_accuracy_summary_scalar)
             validation_accuracy_summary_scalar = tf.placeholder(tf.float32)
             validation_accuracy_summary = tf.summary.scalar(name='validation_accuracy',
                                                             tensor=validation_accuracy_summary_scalar)
 
-            summaries_to_merge = [test_accuracy_summary, validation_accuracy_summary]
+            summaries_to_merge = [test_accuracy_summary, validation_accuracy_summary, clean_train_accuracy_summary,
+                                  clean_train_accuracy_on_clean_summary, clean_train_accuracy_on_noised_summary]
 
             modified_labels_accuracy_summary_scalar = None
             new_labels_accuracy_summary_scalar = None
@@ -591,9 +601,26 @@ class Model:
                 # TEST/VALIDATION ACCURACY
                 #
 
+                clean_train_accuracy = self.calc_accuracy_on_dataset(X_current, Y0_current)
+
+                cleans_indices = np.nonzero(self.is_sample_clean)[0]
+                clean_train_accuracy_on_clean = self.calc_accuracy_on_dataset(X_current[cleans_indices],
+                                                                              Y0_current[cleans_indices])
+                noised_indices = np.nonzero(1 - self.is_sample_clean)[0]
+                if len(noised_indices) > 0:
+                    clean_train_accuracy_on_noised = self.calc_accuracy_on_dataset(X_current[noised_indices],
+                                                                                   Y0_current[noised_indices])
+                else:
+                    clean_train_accuracy_on_noised = 0
+
                 test_accuracy = self.calc_accuracy_on_dataset(X_test, Y_test)
                 validation_accuracy = self.calc_accuracy_on_dataset(X_validation, Y_validation)
 
+                print('\nclean train accuracy after %dth epoch: %g' % (i_epoch_tot, clean_train_accuracy))
+                print('clean train accuracy on clean samples after %dth epoch: %g' % (i_epoch_tot,
+                                                                                      clean_train_accuracy_on_clean))
+                print('clean train accuracy on noised samples after %dth epoch: %g' % (i_epoch_tot,
+                                                                                       clean_train_accuracy_on_noised))
                 print('\ntest accuracy after %dth epoch: %g' % (i_epoch_tot, test_accuracy))
                 print('validation accuracy after %dth epoch: %g' % (i_epoch_tot, validation_accuracy))
 
@@ -602,7 +629,10 @@ class Model:
                 #
 
                 feed_dict = {test_accuracy_summary_scalar: test_accuracy,
-                             validation_accuracy_summary_scalar: validation_accuracy}
+                             validation_accuracy_summary_scalar: validation_accuracy,
+                             clean_train_accuracy_summary_scalar: clean_train_accuracy,
+                             clean_train_accuracy_on_clean_summary_scalar: clean_train_accuracy_on_clean,
+                             clean_train_accuracy_on_noised_summary_scalar: clean_train_accuracy_on_noised}
 
                 if self.update_mode == 1 or self.update_mode == 2:
                     print('accuracy of modified labels compared to true labels on a train set: %g' %
@@ -680,6 +710,8 @@ class Model:
                         if self.update_mode == 2:
                             feed_dict[self.block_class_feature_means_pl] = self.block_class_feature_means
                             feed_dict[self.block_inv_covariance_pl] = self.block_inv_covariances
+                        if self.update_mode == 0:
+                            feed_dict[self.labels_pl] = batch[1]
                         new_labels = self.new_labels_op.eval(feed_dict)
                         Y_current_new[batch[2]] = new_labels
 
@@ -767,7 +799,7 @@ class Model:
                 # SAVE MODEL
                 #
 
-                if (self.update_mode == 1 or self.update_mode == 2) and i_epoch_rel == 0:
+                if i_epoch_rel == 0:
                     # saver0.restore(sess, model_path + 'start')
                     sess.run(tf.global_variables_initializer())
                     print('restarting from scratch')
