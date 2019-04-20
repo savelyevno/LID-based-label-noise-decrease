@@ -230,10 +230,14 @@ def build_cifar_10(x, is_training, n_blocks, block_width):
     with tf.name_scope('flatten'):
         h_flattened = tf.reshape(h_pool3, [-1, 4 * 4 * 196])
 
+    reg_sum = None
+
     if n_blocks == 1:
         with tf.name_scope('fc1'):
             W_fc1 = weight_variable([4 * 4 * 196, block_width])
+            reg_sum = tf.nn.l2_loss(W_fc1)
             b_fc1 = bias_variable([block_width])
+            reg_sum += tf.nn.l2_loss(b_fc1)
 
             a_fc1 = tf.matmul(h_flattened, W_fc1) + b_fc1
             normed_a_fc1 = tf.identity(batch_norm(a_fc1, is_training), name='pre_lid_input')
@@ -247,7 +251,7 @@ def build_cifar_10(x, is_training, n_blocks, block_width):
 
             preds = tf.nn.softmax(a_fc2, -1)
 
-        return normed_a_fc1, h_fc1, a_fc2, preds
+        return normed_a_fc1, h_fc1, a_fc2, preds, reg_sum
     else:
         with tf.name_scope('fc1'):
             Ws_fc1 = []
@@ -262,6 +266,12 @@ def build_cifar_10(x, is_training, n_blocks, block_width):
                 hs_fc1.append(bn_h)
                 a = tf.nn.relu(bn_h, name='relu_' + str(i + 1))
                 acts_fc1.append(a)
+
+                if reg_sum is None:
+                    reg_sum = tf.nn.l2_loss(Ws_fc1[-1])
+                else:
+                    reg_sum += tf.nn.l2_loss(Ws_fc1[-1])
+                reg_sum += tf.nn.l2_loss(bs_fc1[-1])
 
             h_fc1 = tf.reshape(tf.stack(hs_fc1, 1), (-1, block_width * n_blocks), name='pre_lid_input')
             a_fc1 = tf.nn.relu(h_fc1, name='lid_input')
@@ -285,4 +295,4 @@ def build_cifar_10(x, is_training, n_blocks, block_width):
 
             logits = tf.reduce_sum(blocks_logits * block_w, 1, name='logits')
 
-        return h_fc1, a_fc1, logits, preds
+        return h_fc1, a_fc1, logits, preds, reg_sum
