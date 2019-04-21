@@ -56,13 +56,30 @@ def build_cifar_100(x, is_training, depth=6, num_classes=100):
     for _ in np.arange(1, depth):
         b, reg_loss = residual(b, num_conv, filters, reg_loss, is_training)
 
-    pre_lid_input = batch_norm(b, is_training)
-    b = Activation("relu")(pre_lid_input)
+    vanilla = False
+    if vanilla:
+        b = batch_norm(b, is_training)
+        pre_lid_input = tf.identity(Flatten()(b), 'pre_lid_input')
+        b = Activation("relu")(b)
 
-    b = AveragePooling2D(pool_size=(8, 8), strides=(1, 1),
-                         padding="valid")(b)
+        b = AveragePooling2D(pool_size=(8, 8), strides=(1, 1), padding="valid")(b)
 
-    out = Flatten(name='lid_input')(b)
+        out = tf.identity(Flatten()(b), 'lid_input')
+    else:
+        b = batch_norm(b, is_training)
+        b = Activation("relu")(b)
+
+        fc_input = Flatten()(AveragePooling2D(pool_size=(8, 8), strides=(1, 1), padding="valid")(b))
+
+        fc_width = 64
+        fc1_layer = Dense(units=fc_width, input_shape=(64,), kernel_initializer="he_normal")
+        fc1_out = fc1_layer(fc_input)
+
+        reg_loss = tf.add(reg_loss, tf.nn.l2_loss(fc1_layer.weights[0]))
+
+        pre_lid_input = tf.identity(batch_norm(fc1_out, is_training), 'pre_lid_input')
+
+        out = tf.identity(Activation('relu')(pre_lid_input), 'lid_input')
 
     dense_layer = Dense(units=num_classes, input_shape=out.shape[1:], kernel_initializer="he_normal")
     dense = dense_layer(out)
@@ -70,7 +87,7 @@ def build_cifar_100(x, is_training, depth=6, num_classes=100):
 
     act = Activation("softmax")(dense)
 
-    return Flatten(name='pre_lid_input')(pre_lid_input), out, dense, act, reg_loss
+    return pre_lid_input, out, dense, act, reg_loss
 
 
 def residual(inp, num_conv, filters, reg_loss, is_training, more_filters=False, first=False):
