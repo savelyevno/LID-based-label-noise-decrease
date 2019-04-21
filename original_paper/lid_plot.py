@@ -13,7 +13,7 @@ from sklearn.decomposition import PCA
 from keras.optimizers import SGD
 from keras.utils import np_utils, to_categorical
 from original_paper.util import get_lids_random_batch, mle_batch
-from original_paper.datasets import get_data, validatation_split
+from datasets import get_data, validatation_split
 from original_paper.models import get_model
 from original_paper.loss import cross_entropy, boot_soft, boot_hard
 from scipy.interpolate import spline, interp1d

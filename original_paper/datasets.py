@@ -3,6 +3,7 @@ import multiprocessing as mp
 from subprocess import call
 import warnings
 import scipy.io as sio
+from tqdm import tqdm
 import numpy as np
 import keras.backend as K
 from keras.datasets import mnist, cifar10, cifar100
@@ -18,7 +19,7 @@ np.random.seed(123)
 NUM_CLASSES = {'mnist': 10, 'svhn': 10, 'cifar-10': 10, 'cifar-100': 100}
 
 
-def get_data(dataset='mnist', noise_ratio=0, random_shuffle=False):
+def get_data_original(dataset='mnist', noise_ratio=0, random_shuffle=False):
     """
     Get training images with specified ratio of label noise
     :param dataset:
@@ -141,7 +142,7 @@ def get_data(dataset='mnist', noise_ratio=0, random_shuffle=False):
     return X_train, y_train, X_test, y_test
 
 
-def get_data_new(dataset, noise_ratio=0, random_shuffle=False, noise_seed=0):
+def get_data(dataset, noise_ratio=0, random_shuffle=False, noise_seed=0):
     if noise_ratio > 1:
         noise_ratio /= 100
 

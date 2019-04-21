@@ -15,8 +15,8 @@ from original_paper.models import get_model
 from original_paper.loss import cross_entropy, boot_soft, boot_hard, forward, backward, lid_paced_loss
 from original_paper.callback_util import D2LCallback, LoggerCallback
 
-D2L = {'mnist': {'init_epoch': 5, 'epoch_win': 5}, 'svhn': {'init_epoch': 20, 'epoch_win': 5},
-       'cifar-10': {'init_epoch': 40, 'epoch_win': 5}, 'cifar-100': {'init_epoch': 60, 'epoch_win': 5}}
+D2L = {'mnist': {'init_epoch': 5, 'epoch_win': 5}, 'svhn': {'init_epoch': 5, 'epoch_win': 5},
+       'cifar-10': {'init_epoch': 10, 'epoch_win': 5}, 'cifar-100': {'init_epoch': 20, 'epoch_win': 5}}
 
 # prepare folders
 folders = ['data', 'model', 'log']
@@ -121,15 +121,15 @@ def train(dataset='mnist', model_name='d2l', batch_size=128, epochs=50, noise_ra
     # data augmentation
     if dataset in ['mnist', 'svhn']:
         datagen = ImageDataGenerator()
-    elif dataset in ['cifar-10', 'cifar-100']:
+    elif dataset in ['cifar-10']:
         datagen = ImageDataGenerator(
             width_shift_range=0.2,
             height_shift_range=0.2,
             horizontal_flip=True)
     else:
         datagen = ImageDataGenerator(
-            width_shift_range=0.1,
-            height_shift_range=0.1,
+            width_shift_range=0.2,
+            height_shift_range=0.2,
             horizontal_flip=True)
     datagen.fit(X_train)
 
@@ -150,9 +150,6 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # parser.set_defaults(epochs=150)
-    # parser.set_defaults(batch_size=128)
-    # parser.set_defaults(noise_ratio=0)
     parser.add_argument(
         '-d', '--dataset',
         help="Dataset to use; either 'mnist', 'svhn', 'cifar-10', 'cifar-100'",
@@ -178,15 +175,20 @@ if __name__ == "__main__":
         help="The percentage of noisy labels [0, 100].",
         required=False, type=int
     )
+    parser.set_defaults(epochs=150)
+    parser.set_defaults(batch_size=128)
+    parser.set_defaults(noise_ratio=0)
 
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
     args = parser.parse_args()
-
-    # args = parser.parse_args(['-d', 'cifar-10', '-m', 'd2l',
-    #                                   '-e', '120', '-b', '128',
-    #                                   '-r', '60'])
-
     main(args)
+
+    # for dataset in ['mnist']:
+    #     for noise_ratio in ['0', '20', '40', '60']:
+    #         args = parser.parse_args(['-d', dataset, '-m', 'd2l',
+    #                                   '-e', '50', '-b', '128',
+    #                                   '-r', noise_ratio])
+    #         main(args)
 
     K.clear_session()
