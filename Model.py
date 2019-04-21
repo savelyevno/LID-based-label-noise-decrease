@@ -84,6 +84,11 @@ class Model:
                 width_shift_range=0.2,
                 height_shift_range=0.2,
                 horizontal_flip=True)
+        elif self.dataset_name == 'mnist':
+            self.data_augmenter = tf.keras.preprocessing.image.ImageDataGenerator(
+                width_shift_range=0.1,
+                height_shift_range=0.1,
+                horizontal_flip=True)
 
         #
         # BUILD NETWORK
