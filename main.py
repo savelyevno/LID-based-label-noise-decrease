@@ -3,7 +3,7 @@ from Model import Model
 
 if __name__ == '__main__':
     dataset_name = 'mnist'
-    model_name = 'clean_paper_ep50_paper5'
+    model_name = '20_paper_ep50_paper4'
     print(dataset_name, model_name)
     model = Model(dataset_name=dataset_name, model_name=model_name, n_epochs=50, reg_coef=1e-4,
                   # block_width=256,
@@ -21,7 +21,7 @@ if __name__ == '__main__':
                            0 * (1 << 1) +
                            0 * (1 << 2) +
                            0 * (1 << 3))
-    model.train(noise_ratio=0, noise_seed=0)
+    model.train(noise_ratio=0.2, noise_seed=0)
 
     # model_name = 'clean_none_lr_times_1e-3_4_block16'
     # # model_name = 'clean_paper_lr_1e-5_30_1e-6'

@@ -701,10 +701,9 @@ class Model:
                     #
 
                     if turning_rel_epoch != -1:
-                        min_value = lid_per_epoch[:-1].min() if self.calc_lid_min_before_init_epoch else \
-                            lid_per_epoch[self.init_epochs:-1].min()
-                        alpha_value = np.exp(
-                            -(i_epoch_rel / self.n_epochs) * (lid_per_epoch[-1] / min_value))
+                        min_value = np.min(lid_per_epoch[:-1]) if self.calc_lid_min_before_init_epoch else \
+                            np.min(lid_per_epoch[self.init_epochs:-1])
+                        alpha_value = np.exp(-(i_epoch_rel / self.n_epochs) * (lid_per_epoch[-1] / min_value))
                         print('\nnext alpha value:', alpha_value)
 
                 if i_epoch_rel == self.n_epochs and n_label_resets_done < self.n_label_resets:
