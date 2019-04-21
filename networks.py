@@ -73,17 +73,11 @@ def batch_norm(input_tnsr, is_training):
 def build_mnist(x, is_training, n_blocks, block_width):
     batch_size = tf.shape(x)[0]
 
-    # Reshape to use within a convolutional neural net.
-    # Last dimension is for "lid_features" - there is only one here, since images are
-    # grayscale -- it would be 3 for an RGB image, 4 for RGBA, etc.
-    with tf.name_scope('reshape'):
-        x_image = tf.reshape(x, [-1, 28, 28, 1])
-
     # First convolutional layer - maps one grayscale image to 32 feature maps.
     with tf.name_scope('conv1'):
         W_conv1 = weight_variable([3, 3, 1, 32])
         b_conv1 = bias_variable([32])
-        a_conv1 = conv2d(x_image, W_conv1) + b_conv1
+        a_conv1 = conv2d(x, W_conv1) + b_conv1
         b_norm_conv1 = batch_norm(a_conv1, is_training)
         h_conv1 = tf.nn.relu(b_norm_conv1)
 

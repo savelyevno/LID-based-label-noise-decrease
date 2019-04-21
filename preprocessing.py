@@ -13,13 +13,9 @@ def read_image(image_path):
     return Image.open(image_path).convert('L')
 
 
-def mnist_image_to_data(img):
-    return np.reshape(np.float32(img) / 256, (1, 784))
-
-
 def mnist_read_images(foler):
-    X = np.empty((0, 784))
-    Y = np.empty((0, 10))
+    X = []
+    Y = []
     for subdir, dirs, files in os.walk(input_folder_prefix + foler):
         print(subdir)
         for file in files:
@@ -33,14 +29,15 @@ def mnist_read_images(foler):
             image_path = os.path.join(subdir, file)
 
             img = read_image(image_path)
-            x = mnist_image_to_data(img)
-            # X = np.vstack((X, x))
-            X = np.append(X, x, 0)
+            x = np.reshape((np.float32(img) - 127.5) / 127.5, (28, 28, 1))
+            X.append(x)
 
-            y = np.zeros((1, 10))
-            y[0, label] = 1
-            # Y = np.vstack((Y, y))
-            Y = np.append(Y, y, 0)
+            y = np.zeros(10)
+            y[label] = 1
+            Y.append(y)
+
+    X = np.array(X, dtype=np.float32)
+    Y = np.array(Y, dtype=np.float32)
 
     return X, Y
 
@@ -56,11 +53,16 @@ def read_dataset(name, type):
     return X, Y
 
 
-def mnist_read_images_write_dataset(folder, output_name):
-    X, Y = mnist_read_images(folder)
-    print('done reading')
-    write_dataset(output_name, X, Y)
-    print('done writing')
+def mnist_read_images_write_dataset():
+    X_train, Y_train = mnist_read_images('trainingSet')
+    X_test, Y_test = mnist_read_images('testSet')
+
+    means = X_test.mean(axis=0)
+    X_train -= means
+    X_test -= means
+
+    write_dataset('mnist', 'train', X_train, Y_train)
+    write_dataset('mnist', 'test', X_test, Y_test)
 
 
 def cifar10_convert():
@@ -182,8 +184,7 @@ def create_validation_set(dataset_name, n_samples_per_class, augmentation_multip
 
 
 if __name__ == '__main__':
-    # mnist_read_images_write_dataset('trainingSet', 'train')
-    # mnist_read_images_write_dataset('testSet', 'test')
+    # mnist_read_images_write_dataset()
     # mnist_read_images_write_dataset('trainingSample', 'train_sample')
 
     # name = 'train'
@@ -195,4 +196,4 @@ if __name__ == '__main__':
     # cifar10_convert()
     # cifar100_convert()
 
-    create_validation_set('cifar-10', 100, 1)
+    create_validation_set('mnist', 100, 0)
