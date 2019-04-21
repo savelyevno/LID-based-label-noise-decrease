@@ -16,6 +16,7 @@ if __name__ == '__main__':
                   update_mode=1,
                   init_epochs=5,
                   n_label_resets=0, cut_train_set=False, mod_labels_after_last_reset=True, use_loss_weights=False,
+                  calc_lid_min_before_init_epoch=True,
                   log_mask=1 * (1 << 0) +
                            0 * (1 << 1) +
                            0 * (1 << 2) +

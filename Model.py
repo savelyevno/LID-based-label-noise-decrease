@@ -21,7 +21,8 @@ class Model:
     def __init__(self, dataset_name, model_name, update_mode, init_epochs, n_epochs, reg_coef, lr_segments=None,
                  log_mask=0, lid_use_pre_relu=False, lda_use_pre_relu=True,
                  n_blocks=1, block_width=256,
-                 n_label_resets=0, cut_train_set=False, mod_labels_after_last_reset=True, use_loss_weights=False):
+                 n_label_resets=0, cut_train_set=False, mod_labels_after_last_reset=True, use_loss_weights=False,
+                 calc_lid_min_before_init_epoch=True):
         """
 
         :param dataset_name:         dataset name: mnist/cifar-10/cifar-100
@@ -49,6 +50,7 @@ class Model:
         self.cut_train_set = cut_train_set
         self.mod_labels_after_last_reset = mod_labels_after_last_reset
         self.use_loss_weights = use_loss_weights
+        self.calc_lid_min_before_init_epoch = calc_lid_min_before_init_epoch
         self.init_epochs = init_epochs
         self.reg_coef = reg_coef
 
@@ -699,9 +701,10 @@ class Model:
                     #
 
                     if turning_rel_epoch != -1:
+                        min_value = lid_per_epoch[:-1].min() if self.calc_lid_min_before_init_epoch else \
+                            lid_per_epoch[self.init_epochs:-1].min()
                         alpha_value = np.exp(
-                            -(i_epoch_rel / self.n_epochs) * (lid_per_epoch[-1] /
-                                                              np.min(lid_per_epoch[self.init_epochs:-1])))
+                            -(i_epoch_rel / self.n_epochs) * (lid_per_epoch[-1] / min_value))
                         print('\nnext alpha value:', alpha_value)
 
                 if i_epoch_rel == self.n_epochs and n_label_resets_done < self.n_label_resets:
