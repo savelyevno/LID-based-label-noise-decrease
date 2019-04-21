@@ -3,7 +3,7 @@ from Model import Model
 
 if __name__ == '__main__':
     dataset_name = 'mnist'
-    model_name = 'clean_paper_ep50_paper1'
+    model_name = 'clean_paper_ep50_paper5'
     print(dataset_name, model_name)
     model = Model(dataset_name=dataset_name, model_name=model_name, n_epochs=50, reg_coef=1e-4,
                   # block_width=256,

@@ -66,7 +66,7 @@ class Model:
         #
 
         if self.dataset_name == 'mnist':
-            self.nn_input_pl = tf.placeholder(tf.float32, [None, 784], name='x')
+            self.nn_input_pl = tf.placeholder(tf.float32, [None, 28, 28, 1], name='x')
         elif self.dataset_name == 'cifar-10' or self.dataset_name == 'cifar-100':
             self.nn_input_pl = tf.placeholder(tf.float32, [None, 32, 32, 3], name='x')
 
