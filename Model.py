@@ -230,14 +230,14 @@ class Model:
         self.rel_epoch_pl = tf.placeholder(tf.int32)
 
         with tf.name_scope('learning_rate'):
-            def produce_lr_tensor(segment_start=0, segment_i=1):
-                if segment_i == len(self.lr_segments):
+            def produce_lr_tensor(segment_start=0, segment_i=0):
+                if segment_i == len(self.lr_segments) - 1:
                     return self.lr_segments[-1][1]
                 else:
-                    segment_end = segment_start + self.lr_segments[segment_i - 1][0]
-                    return tf.cond(pred=tf.cast(self.rel_epoch_pl, tf.float32) < segment_end * self.n_epochs,
-                                   true_fn=lambda: self.lr_segments[segment_i - 1][1],
-                                   false_fn=lambda: produce_lr_tensor(segment_end, segment_i + 1))
+                    segment_end = segment_start + self.lr_segments[segment_i][0]
+                    return tf.cond(pred=self.rel_epoch_pl < segment_end,
+                                   true_fn=lambda: self.lr_segments[segment_i][1],
+                                   false_fn=lambda: produce_lr_tensor(segment_end + 1, segment_i + 1))
 
             self.lr = produce_lr_tensor()
 
