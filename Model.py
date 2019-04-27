@@ -295,12 +295,22 @@ class Model:
             clean_train_accuracy_summary_scalar = tf.placeholder(tf.float32)
             clean_train_accuracy_summary = tf.summary.scalar(name='clean_train_accuracy',
                                                              tensor=clean_train_accuracy_summary_scalar)
-            clean_train_accuracy_on_clean_summary_scalar = tf.placeholder(tf.float32)
-            clean_train_accuracy_on_clean_summary = tf.summary.scalar(name='clean_train_accuracy_on_clean',
-                                                                    tensor=clean_train_accuracy_on_clean_summary_scalar)
+
+            train_accuracy_on_clean_summary_scalar = tf.placeholder(tf.float32)
+            train_accuracy_on_clean_summary = tf.summary.scalar(
+                name='train_accuracy_on_clean',
+                tensor=train_accuracy_on_clean_summary_scalar)
+
             clean_train_accuracy_on_noised_summary_scalar = tf.placeholder(tf.float32)
-            clean_train_accuracy_on_noised_summary = tf.summary.scalar(name='clean_train_accuracy_on_noised',
-                                                             tensor=clean_train_accuracy_on_noised_summary_scalar)
+            clean_train_accuracy_on_noised_summary = tf.summary.scalar(
+                name='clean_train_accuracy_on_noised',
+                tensor=clean_train_accuracy_on_noised_summary_scalar)
+
+            noised_train_accuracy_on_noised_summary_scalar = tf.placeholder(tf.float32)
+            noised_train_accuracy_on_noised_summary = tf.summary.scalar(
+                name='noised_train_accuracy_on_noised',
+                tensor=noised_train_accuracy_on_noised_summary_scalar)
+
             test_accuracy_summary_scalar = tf.placeholder(tf.float32)
             test_accuracy_summary = tf.summary.scalar(name='test_accuracy', tensor=test_accuracy_summary_scalar)
             validation_accuracy_summary_scalar = tf.placeholder(tf.float32)
@@ -308,7 +318,8 @@ class Model:
                                                             tensor=validation_accuracy_summary_scalar)
 
             summaries_to_merge = [test_accuracy_summary, validation_accuracy_summary, clean_train_accuracy_summary,
-                                  clean_train_accuracy_on_clean_summary, clean_train_accuracy_on_noised_summary]
+                                  train_accuracy_on_clean_summary, clean_train_accuracy_on_noised_summary,
+                                  noised_train_accuracy_on_noised_summary]
 
             modified_labels_accuracy_summary_scalar = None
             new_labels_accuracy_summary_scalar = None
@@ -608,24 +619,29 @@ class Model:
 
                 clean_train_accuracy = self.calc_accuracy_on_dataset(X_current, Y0_current)
 
-                cleans_indices = np.nonzero(self.is_sample_clean)[0]
-                clean_train_accuracy_on_clean = self.calc_accuracy_on_dataset(X_current[cleans_indices],
-                                                                              Y0_current[cleans_indices])
+                clean_indices = np.nonzero(self.is_sample_clean)[0]
+                train_accuracy_on_clean = self.calc_accuracy_on_dataset(X_current[clean_indices],
+                                                                        Y_current[clean_indices])
+
                 noised_indices = np.nonzero(1 - self.is_sample_clean)[0]
                 if len(noised_indices) > 0:
                     clean_train_accuracy_on_noised = self.calc_accuracy_on_dataset(X_current[noised_indices],
                                                                                    Y0_current[noised_indices])
+                    noised_train_accuracy_on_noised = self.calc_accuracy_on_dataset(X_current[noised_indices],
+                                                                                    Y_current[noised_indices])
                 else:
                     clean_train_accuracy_on_noised = 0
+                    noised_train_accuracy_on_noised = 0
 
                 test_accuracy = self.calc_accuracy_on_dataset(X_test, Y_test)
                 validation_accuracy = self.calc_accuracy_on_dataset(X_validation, Y_validation)
 
                 print('\nclean train accuracy after %dth epoch: %g' % (i_epoch_tot, clean_train_accuracy))
-                print('clean train accuracy on clean samples after %dth epoch: %g' % (i_epoch_tot,
-                                                                                      clean_train_accuracy_on_clean))
+                print('train accuracy on clean samples after %dth epoch: %g' % (i_epoch_tot, train_accuracy_on_clean))
                 print('clean train accuracy on noised samples after %dth epoch: %g' % (i_epoch_tot,
                                                                                        clean_train_accuracy_on_noised))
+                print('noised train accuracy on noised samples after %dth epoch: %g' % (i_epoch_tot,
+                                                                                        noised_train_accuracy_on_noised))
                 print('\ntest accuracy after %dth epoch: %g' % (i_epoch_tot, test_accuracy))
                 print('validation accuracy after %dth epoch: %g' % (i_epoch_tot, validation_accuracy))
 
@@ -636,8 +652,9 @@ class Model:
                 feed_dict = {test_accuracy_summary_scalar: test_accuracy,
                              validation_accuracy_summary_scalar: validation_accuracy,
                              clean_train_accuracy_summary_scalar: clean_train_accuracy,
-                             clean_train_accuracy_on_clean_summary_scalar: clean_train_accuracy_on_clean,
-                             clean_train_accuracy_on_noised_summary_scalar: clean_train_accuracy_on_noised}
+                             train_accuracy_on_clean_summary_scalar: train_accuracy_on_clean,
+                             clean_train_accuracy_on_noised_summary_scalar: clean_train_accuracy_on_noised,
+                             noised_train_accuracy_on_noised_summary_scalar: noised_train_accuracy_on_noised}
 
                 if self.update_mode == 1 or self.update_mode == 2:
                     print('accuracy of modified labels compared to true labels on a train set: %g' %
