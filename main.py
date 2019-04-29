@@ -2,8 +2,8 @@ from Model import Model
 
 
 if __name__ == '__main__':
-    dataset_name = 'cifar-100'
-    model_name = '20_none_ep100'
+    dataset_name = 'cifar-10'
+    model_name = '20_none_ep100_cifar100Model'
     print(dataset_name, model_name)
     model = Model(dataset_name=dataset_name, model_name=model_name, n_epochs=100, reg_coef=1e-6,
                   # block_width=256,

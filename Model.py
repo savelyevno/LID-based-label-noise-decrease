@@ -105,8 +105,8 @@ class Model:
                                                                                             self.n_blocks,
                                                                                             self.block_width)
         elif self.dataset_name == 'cifar-10':
-            self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds, reg_loss_unscaled = build_cifar_10(
-                self.nn_input_pl, self.is_training, self.n_blocks, self.block_width)
+            self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds, reg_loss_unscaled = build_cifar_100(
+                self.nn_input_pl, self.is_training, num_classes=10)
 
         elif self.dataset_name == 'cifar-100':
             self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds, reg_loss_unscaled = build_cifar_100(
