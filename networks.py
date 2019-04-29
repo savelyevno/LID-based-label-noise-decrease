@@ -164,7 +164,7 @@ def build_mnist(x, is_training, n_blocks, block_width):
         return h_fc1, a_fc1, logits, preds
 
 
-def build_cifar_10(x, is_training, n_blocks, block_width):
+def build_cifar_10(x, is_training, n_blocks, block_width, n_classes=10):
     batch_size = tf.shape(x)[0]
 
     # Block 1
@@ -238,8 +238,8 @@ def build_cifar_10(x, is_training, n_blocks, block_width):
             h_fc1 = tf.nn.relu(normed_a_fc1, name='lid_input')
 
         with tf.name_scope('fc2'):
-            W_fc2 = weight_variable([block_width, N_CLASSES])
-            b_fc2 = bias_variable([N_CLASSES])
+            W_fc2 = weight_variable([block_width, n_classes])
+            b_fc2 = bias_variable([n_classes])
 
             a_fc2 = tf.identity(tf.matmul(h_fc1, W_fc2) + b_fc2, name='logits')
 
@@ -277,8 +277,8 @@ def build_cifar_10(x, is_training, n_blocks, block_width):
         # Map the 1024 lid_features to 10 classes, one for each digit
         with tf.name_scope('fc2'):
             for i in range(n_blocks):
-                Ws_fc2.append(weight_variable([block_width, N_CLASSES], 'W_' + str(i + 1)))
-                bs_fc2.append(bias_variable([N_CLASSES], 'b_' + str(i + 1)))
+                Ws_fc2.append(weight_variable([block_width, n_classes], 'W_' + str(i + 1)))
+                bs_fc2.append(bias_variable([n_classes], 'b_' + str(i + 1)))
                 logits_fc2.append(tf.identity(tf.matmul(acts_fc1[i], Ws_fc2[i]) + bs_fc2[i], 'logits_' + str(i + 1)))
 
             block_w = tf.reshape(tf.one_hot(tf.random_uniform((batch_size,), 0, n_blocks, dtype=tf.int32), n_blocks),
