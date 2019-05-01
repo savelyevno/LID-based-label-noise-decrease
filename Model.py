@@ -37,6 +37,7 @@ class Model:
                                     1st bit: logs relu features per element
                                     2nd bit: logs pre relu features per element
                                     3rd bit: logs logits per element
+                                    4rd bit: logs LID per class
         """
 
         self.dataset_name = dataset_name
@@ -428,13 +429,13 @@ class Model:
             #
 
             lid_per_epoch = None
-            if self.update_mode == 1 or self.to_log(0):
-                initial_lid_score = self._calc_lid(X_current, Y_current, self.lid_calc_op, self.nn_input_pl,
-                                                   self.is_training)
-                if initial_lid_score is None:
-                    lid_per_epoch = []
-                else:
-                    lid_per_epoch = [initial_lid_score]
+            if self.update_mode == 1 or self.to_log(0) or self.to_log(4):
+                lid_calculator = self._calc_lid(X_current, Y_current, self.lid_calc_op, self.nn_input_pl,
+                                                self.is_training)
+                initial_lid_score = lid_calculator.mean
+                lid_per_epoch = []
+                if initial_lid_score is not None:
+                    lid_per_epoch.append(initial_lid_score)
 
                 print('initial LID score:', initial_lid_score)
 
@@ -442,6 +443,11 @@ class Model:
                     lid_summary_str = self.sess.run(lid_summary, feed_dict={lid_summary_scalar: initial_lid_score})
                     summary_writer.add_summary(lid_summary_str, 0)
                     summary_writer.flush()
+
+                if self.to_log(4):
+                    folder_to_save = os.path.join('logs/LID/per_class', self.dataset_name, self.model_name)
+                    os.makedirs(folder_to_save)
+                    np.save(os.path.join(folder_to_save, '0'), lid_calculator.mean_per_class)
 
             #
             # FIT AUGMENTER
@@ -557,7 +563,7 @@ class Model:
                         lid_features_per_epoch_per_element,
                         np.expand_dims(lid_features_per_element, 0),
                         0)
-                    np.save(file='lid_features/' + self.dataset_name + '/' + self.model_name,
+                    np.save(file='logs/lid_features/' + self.dataset_name + '/' + self.model_name,
                             arr=lid_features_per_epoch_per_element)
 
                 if self.to_log(2):
@@ -565,7 +571,7 @@ class Model:
                         pre_lid_features_per_epoch_per_element,
                         np.expand_dims(pre_lid_features_per_element, 0),
                         0)
-                    np.save(file='pre_lid_features/' + self.dataset_name + '/' + self.model_name,
+                    np.save(file='logs/pre_lid_features/' + self.dataset_name + '/' + self.model_name,
                             arr=pre_lid_features_per_epoch_per_element)
 
                 if self.to_log(3):
@@ -573,7 +579,7 @@ class Model:
                         logits_per_epoch_per_element,
                         np.expand_dims(logits_per_element, 0),
                         0)
-                    np.save(file='logits/' + self.dataset_name + '/' + self.model_name,
+                    np.save(file='logs/logits/' + self.dataset_name + '/' + self.model_name,
                             arr=logits_per_epoch_per_element)
 
                 #
@@ -686,17 +692,22 @@ class Model:
                     summary_feed_dict[new_labels_accuracy_on_noised_only_summary_scalar] = \
                         new_labels_accuracy_on_noised_only
 
-                if self.update_mode == 1 or self.update_mode == 2 or self.to_log(0):
+                if self.update_mode == 1 or self.update_mode == 2 or self.to_log(0) or self.to_log(4):
                     #
                     # CALCULATE LID
                     #
 
                     # TODO: would augmented data change LIDs?
-                    new_lid_score = self._calc_lid(X_current, Y_current, self.lid_calc_op, self.nn_input_pl,
-                                                   self.is_training)
+                    lid_calculator = self._calc_lid(X_current, Y_current, self.lid_calc_op, self.nn_input_pl,
+                                                    self.is_training)
+                    new_lid_score = lid_calculator.mean
                     lid_per_epoch.append(new_lid_score)
 
                     print('\nLID score after %dth epoch: %g' % (i_epoch_tot, new_lid_score,))
+
+                    if self.to_log(4):
+                        folder_to_save = os.path.join('logs/LID/per_class', self.dataset_name, self.model_name)
+                        np.save(os.path.join(folder_to_save, str(i_epoch_tot)), lid_calculator.mean_per_class)
 
                 if self.to_log(0):
                     summary_feed_dict[lid_summary_scalar] = lid_per_epoch[-1]
@@ -883,9 +894,11 @@ class Model:
                 features[batch[2]] = batch_res
 
             if compute_pre_relu:
-                np.save('pre_lid_features/' + dataset_name + '/' + model_name + '_' + dataset_type, np.expand_dims(features, 0))
+                np.save('logs/pre_lid_features/' + dataset_name + '/' + model_name + '_' + dataset_type,
+                        np.expand_dims(features, 0))
             else:
-                np.save('lid_features/' + dataset_name + '/' + model_name + '_' + dataset_type, np.expand_dims(features, 0))
+                np.save('logs/lid_features/' + dataset_name + '/' + model_name + '_' + dataset_type,
+                        np.expand_dims(features, 0))
 
     @staticmethod
     def compute_block_features(dataset_name, model_name, epoch, dataset_type, n_blocks):
@@ -968,9 +981,8 @@ class Model:
 
             print('test accuracy %g' % test_accuracy)
 
-    @staticmethod
-    def _calc_lid(X, Y, lid_calc_op, x, is_training):
-        lid_score = 0
+    def _calc_lid(self, X, Y, lid_calc_op, x, is_training):
+        lid_calculator = DatasetMetricCalculator(class_count=self.n_classes)
 
         i_batch = -1
         for batch in batch_iterator(X, Y, LID_BATCH_SIZE, True):
@@ -982,20 +994,14 @@ class Model:
             batch_lid_scores = lid_calc_op.eval(feed_dict={x: batch[0], is_training: False})
             if batch_lid_scores.min() < 0:
                 print('negative lid!', list(batch_lid_scores))
-                return None
-                i_batch -= 1
-                continue
+                break
             if batch_lid_scores.max() > 10000:
                 print('lid is too big!', list(batch_lid_scores))
-                return None
-                i_batch -= 1
-                continue
+                break
 
-            lid_score += batch_lid_scores.mean()
+            lid_calculator.add_batch_values_with_labels(batch_lid_scores, batch[1])
 
-        lid_score /= LID_BATCH_CNT
-
-        return lid_score
+        return lid_calculator
 
     def _compute_LDA(self, X, Y, Y_ind, Y_ind_per_class):
         print('Computing LDA parameters')

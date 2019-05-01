@@ -1,8 +1,6 @@
 datasets/**
 .idea/**
 __pycache__/**
-distances_to_first/**
-feature_matrices_old/**
 figs/**
 
 checkpoints/*/*
@@ -10,21 +8,17 @@ checkpoints/*/*
 
 old_checkpoints/*/*/
 
-distances_to_mean/*/*
-!distances_to_mean/*/.empty
+logs/lid_features/*/*
+!logs/lid_features/*/.empty
 
-lid_features/*/*
-!lid_features/*/.empty
+logs/logits/*/*
+!logs/logits/*/.empty
 
-logits/*/*
-!logits/*/.empty
+logs/pre_lid_features/*/*
+!logs/pre_lid_features/*/.empty
 
-pre_lid_features/*/*
-!pre_lid_features/*/.empty
-
-
-class_feature_means/*/*
-!class_feature_means/*/.empty
+logs/LID/per_class/*/*
+!logs/LID_per_class/*/.empty
 
 *.csv
 checkpoints_paper/*

@@ -22,7 +22,8 @@ if __name__ == '__main__':
                   log_mask=1 * (1 << 0) +
                            0 * (1 << 1) +
                            0 * (1 << 2) +
-                           0 * (1 << 3))
+                           0 * (1 << 3) +
+                           1 * (1 << 4))
     model.train(noise_ratio=0.2, noise_seed=0)
 
     # model_name = 'clean_none_lr_times_1e-3_4_block16'
