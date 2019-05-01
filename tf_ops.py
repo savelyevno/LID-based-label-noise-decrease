@@ -49,8 +49,8 @@ def get_lid_per_element_calc_op(g_x, X):
     k_nearest = -k_nearest_raw
 
     distance_ratios = tf.multiply(k_nearest, tf.expand_dims(1 / k_nearest[:, :, -1], 2))
-    LIDs_for_btach = - LID_K / tf.reduce_sum(tf.log(distance_ratios + EPS), 2)
-    LIDs = tf.reduce_mean(LIDs_for_btach, 1)
+    LIDs_for_batch = - LID_K / tf.reduce_sum(tf.log(distance_ratios + EPS), 2)
+    LIDs = tf.reduce_mean(LIDs_for_batch, 1)
 
     return LIDs
 

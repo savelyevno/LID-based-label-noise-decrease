@@ -1,5 +1,6 @@
 # import matplotlib
 # matplotlib.use('GTK3Agg')
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import stats
@@ -1606,6 +1607,35 @@ def test_softmax_comb():
     print(p3)
 
 
+def test_LID_plots():
+    folder_path = 'logs/LID/class_wise'
+    # folder_path = 'logs/LID/per_class'
+
+    if bool(1):
+        dataset_name = 'cifar-10'
+        model_name = '20_none_ep50'
+    else:
+        dataset_name = 'cifar-100'
+        model_name = '20_none_ep100'
+
+    total_folder_path = os.path.join(folder_path, dataset_name, model_name)
+
+    data = []
+    for filename in sorted(os.listdir(total_folder_path), key=lambda s: int(s.split('.')[0])):
+        data.append(np.load(os.path.join(total_folder_path, filename)))
+    data = np.array(data)
+
+    plt.plot(np.mean(data, 1), label='mean', linewidth=1.5)
+    # for i in range(data.shape[1]):
+    for i in np.random.choice(np.arange(data.shape[1]), 10, False):
+        plt.plot(data[:, i], label=str(i), linewidth=0.5)
+
+    plt.grid()
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
 
 if __name__ == '__main__':
     # test_single_epoch(20)
@@ -1626,4 +1656,5 @@ if __name__ == '__main__':
     # test_distance_to_first()
     # test_logits_accuracy()
     # test_mean_and_covariance()
-    test_softmax_comb()
+    # test_softmax_comb()
+    test_LID_plots()

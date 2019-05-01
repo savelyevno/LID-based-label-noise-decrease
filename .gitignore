@@ -18,7 +18,10 @@ logs/pre_lid_features/*/*
 !logs/pre_lid_features/*/.empty
 
 logs/LID/per_class/*/*
-!logs/LID_per_class/*/.empty
+!logs/LID/per_class/*/.empty
+
+logs/LID/class_wise/*/*
+!logs/LID/class_wise/*/.empty
 
 *.csv
 checkpoints_paper/*
