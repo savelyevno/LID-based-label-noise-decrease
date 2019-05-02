@@ -6,6 +6,7 @@ import numpy as np
 from scipy import stats
 import scipy.spatial
 import bisect
+import csv
 
 from EM import em_solve, e_step
 from Timer import timer
@@ -1636,6 +1637,78 @@ def test_LID_plots():
     plt.show()
 
 
+def test_LID_EMA():
+    folder_path = 'logs/csvs'
+
+    # dataset_name = 'mnist'
+    # dataset_name = 'cifar-10'
+    dataset_name = 'cifar-100'
+
+    model_name = '20_none_ep100_sepLL_2_20_16'
+    # model_name = 'clean_none_ep50_sepLL_2_20_16'
+
+    filename = 'separate_lls_mean_LID'
+    filename += '.csv'
+
+    total_folder_path = os.path.join(folder_path, dataset_name, model_name)
+
+    data = []
+    with open(os.path.join(total_folder_path, filename)) as f:
+        reader = csv.DictReader(f)
+
+        for row in reader:
+            data.append((float(row['Step']), float(row['Value'])))
+
+    data = np.array(data)
+    data = data[1:, :]
+
+    args = data[:, 0] * 128 / 49000
+
+    # mu = [data[0, 1]]
+    # var = [0]
+    # lam = 0.5
+    # for i in range(1, len(data[:, 1])):
+    #     delta = data[i, 1] - mu[i - 1]
+    #     mu.append((1 - lam) * delta + mu[i - 1])
+    #     var.append(lam * (var[i - 1] + (1 - lam) * delta**2))
+
+    win = 5
+    mu = []
+    var = []
+    for i in range(data.shape[0]):
+        if i < win:
+            mu.append(np.nan)
+            var.append(np.nan)
+            continue
+        mu.append(data[i - win+1:i + 1, 1].mean())
+        var.append(data[i - win+1:i + 1, 1].var())
+
+    mu = np.array(mu)
+    std = np.array(var) ** 0.5
+    std *= 0.5
+
+    plt.plot(args, data[:, 1], '.-')
+    plt.plot(args, mu, color='C1')
+    plt.plot(args, mu - std, '--', linewidth=0.75, color='C1')
+    plt.plot(args, mu + std, '--', linewidth=0.75, color='C1')
+
+    i = 1
+    while i < data.shape[0]:
+        if abs(data[i, 1] - mu[i]) < std[i]:
+            break
+        i += 1
+
+    delta = data[i:, 1] / data[i, 1] - 1
+    plt.plot(args[i:], delta, color='C2')
+
+    beta = 20
+    weights = np.exp(- np.arange(i, data.shape[0]) / data.shape[0] * np.maximum(delta, 0) * beta)
+    weights = [weights[:i + 1].min() for i in range(len(weights))]
+    plt.plot(args[i:], weights, color='C3')
+
+    plt.grid()
+    plt.show()
+
 
 if __name__ == '__main__':
     # test_single_epoch(20)
@@ -1657,4 +1730,5 @@ if __name__ == '__main__':
     # test_logits_accuracy()
     # test_mean_and_covariance()
     # test_softmax_comb()
-    test_LID_plots()
+    # test_LID_plots()
+    test_LID_EMA()

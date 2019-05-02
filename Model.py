@@ -3,8 +3,9 @@ import numpy as np
 import scipy.stats
 import tensorflow as tf
 from tensorflow.python import debug as tf_debug
+import itertools
 
-from networks import build_mnist, build_cifar_10
+from networks import build_mnist, build_cifar_10, linear_layer
 from cifar_100_resnet import build_cifar_100
 from tf_ops import get_lid_calc_op, get_update_class_feature_selective_sum_and_counts_op, \
     get_update_class_covariances_selective_sum_op, get_LDA_logits_calc_op, get_Mahalanobis_distance_calc_op, \
@@ -24,7 +25,8 @@ class Model:
                  log_mask=0, lid_use_pre_relu=False, lda_use_pre_relu=True,
                  n_blocks=1, block_width=256,
                  n_label_resets=0, cut_train_set=False, mod_labels_after_last_reset=True, use_loss_weights=False,
-                 calc_lid_min_before_init_epoch=True):
+                 calc_lid_min_before_init_epoch=True,
+                 train_separate_ll=False, separate_ll_class_count=2, separate_ll_count=10, separate_ll_fc_width=16):
         """
 
         :param dataset_name:         dataset name: mnist/cifar-10/cifar-100
@@ -58,6 +60,11 @@ class Model:
         self.init_epochs = init_epochs
         self.reg_coef = reg_coef
 
+        self.train_separate_ll = train_separate_ll
+        self.separate_ll_class_count = separate_ll_class_count
+        self.separate_ll_count = separate_ll_count
+        self.separate_ll_fc_width = separate_ll_fc_width
+
         self.block_width = block_width
         self.total_hidden_width = block_width * n_blocks
 
@@ -77,8 +84,26 @@ class Model:
             self.nn_input_pl = tf.placeholder(tf.float32, [None, 32, 32, 3], name='x')
 
         self.labels_pl = tf.placeholder(tf.float32, [None, self.n_classes], name='y_')
+        self.labels_argmaxed = tf.argmax(self.labels_pl, -1)
 
         self.is_training = tf.placeholder(dtype=tf.bool, name='is_training')
+
+        self.separate_lls_classes = None
+        self.separate_ll_classes_inv_map = None
+        if self.train_separate_ll:
+            all_possible_class_groups = list(itertools.combinations(range(self.n_classes),
+                                                                    self.separate_ll_class_count))
+            if len(all_possible_class_groups) < self.separate_ll_count:
+                raise Exception("Not enough class combinations for separate linear layers")
+
+            self.separate_lls_classes = np.random.permutation(all_possible_class_groups)[:self.separate_ll_count]
+
+            self.separate_ll_classes_inv_map = []
+            for i in range(self.separate_ll_count):
+                inv_map = np.zeros(self.n_classes, np.int64)
+                for j in range(self.separate_ll_class_count):
+                    inv_map[self.separate_lls_classes[i][j]] = j
+                self.separate_ll_classes_inv_map.append(inv_map)
 
         #
         # PREPARE DATA AUGMENTATION OPERATION
@@ -100,20 +125,56 @@ class Model:
         # BUILD NETWORK
         #
 
+        conv_res = None
         reg_loss_unscaled = 0.0
         if self.dataset_name == 'mnist':
-            self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds = build_mnist(self.nn_input_pl,
-                                                                                            self.is_training,
-                                                                                            self.n_blocks,
-                                                                                            self.block_width)
-        elif self.dataset_name == 'cifar-10':
-            self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds, reg_loss_unscaled = build_cifar_10(
+            conv_res, self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds = build_mnist(
                 self.nn_input_pl, self.is_training, self.n_blocks, self.block_width)
+        elif self.dataset_name == 'cifar-10':
+            conv_res, self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds, reg_loss_unscaled =\
+                build_cifar_10(self.nn_input_pl, self.is_training, self.n_blocks, self.block_width, 10)
 
         elif self.dataset_name == 'cifar-100':
             self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds, reg_loss_unscaled = build_cifar_100(
-                self.nn_input_pl,
-                self.is_training)
+                            self.nn_input_pl,
+                            self.is_training)
+            conv_res = self.lid_layer_op
+            # conv_res, self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds, reg_loss_unscaled = \
+            #     build_cifar_10(self.nn_input_pl, self.is_training, self.n_blocks, self.block_width, 100)
+
+        self.separate_lls_preds = None
+        self.separate_lls_lid_calc_op = None
+        self.separate_lls_logits = None
+        if self.train_separate_ll:
+            self.separate_lls_labels = []
+            self.separate_lls_preds = []
+            self.separate_lls_lid_calc_op = []
+            self.separate_lls_logits = []
+            for i in range(self.separate_ll_count):
+                batch_elements_belonging_to_selected_classes_indices = tf.reshape(
+                    tf.where(
+                        tf.reduce_any(
+                            input_tensor=tf.equal(x=tf.expand_dims(self.labels_argmaxed, 1),
+                                                  y=self.separate_lls_classes[i]),
+                            axis=1)),
+                    (-1, ))
+
+                separate_ll_input = tf.stop_gradient(
+                    tf.gather(conv_res, batch_elements_belonging_to_selected_classes_indices))
+
+                self.separate_lls_labels.append(tf.one_hot(
+                        tf.gather(
+                            tf.gather(self.separate_ll_classes_inv_map[i],
+                                      self.labels_argmaxed),
+                            batch_elements_belonging_to_selected_classes_indices),
+                        self.separate_ll_class_count))
+
+                separate_ll_hidden_op, separate_lls_logits = linear_layer(separate_ll_input, self.is_training,
+                                                                          self.separate_ll_fc_width,
+                                                                          self.separate_ll_class_count)
+                self.separate_lls_logits.append(separate_lls_logits)
+                self.separate_lls_preds.append(tf.nn.softmax(separate_lls_logits))
+                self.separate_lls_lid_calc_op.append(get_lid_calc_op(separate_ll_hidden_op))
 
         #
         # PREPARE FOR LABEL CHANGING
@@ -220,21 +281,39 @@ class Model:
                     labels=self.modified_labels_op,
                     logits=self.logits)
 
-            self.modified_labels_similarity = tf.reduce_sum(self.modified_labels_op * self.labels_pl, -1)
-            self.new_labels_similarity = tf.reduce_sum(self.new_labels_op * self.labels_pl, -1)
+            self.computed_labels_similarity_reference_pl = tf.placeholder(tf.float32, (None, self.n_classes))
+            self.modified_labels_similarity = tf.reduce_sum(
+                self.modified_labels_op * self.computed_labels_similarity_reference_pl, -1)
+            self.new_labels_similarity = tf.reduce_sum(
+                self.new_labels_op * self.computed_labels_similarity_reference_pl, -1)
 
             self.reg_loss = tf.identity(2 * self.reg_coef * reg_loss_unscaled, 'reg_loss')
 
-        self.cross_entropy = self.reg_loss + tf.reduce_mean(cross_entropy * self.loss_weights_pl)
+            self.separate_lls_loss = None
+            if self.train_separate_ll:
+                self.separate_lls_loss = []
+                for i in range(self.separate_ll_count):
+                    self.separate_lls_loss.append(tf.nn.softmax_cross_entropy_with_logits_v2(
+                        labels=self.separate_lls_labels[i], logits=self.separate_lls_logits[i]))
+
+        self.cross_entropy = tf.reduce_mean(cross_entropy * self.loss_weights_pl)
 
         #
         # CREATE ACCURACY
         #
 
         with tf.name_scope('accuracy'):
-            correct_prediction = tf.equal(tf.argmax(self.preds, 1), tf.argmax(self.labels_pl, 1))
-            correct_prediction = tf.cast(correct_prediction, tf.float32)
-            self.accuracy = tf.reduce_mean(correct_prediction, name='accuracy')
+            self.batch_accuracies = tf.cast(tf.equal(tf.argmax(self.preds, 1), self.labels_argmaxed), tf.float32)
+            self.accuracy = tf.reduce_mean(self.batch_accuracies, name='accuracy')
+
+            self.separate_lls_accuracy = None
+            if self.train_separate_ll:
+                self.separate_lls_accuracy = []
+                for i in range(self.separate_ll_count):
+                    self.separate_lls_accuracy.append(tf.cast(
+                            tf.equal(tf.argmax(self.separate_lls_preds[i], 1),
+                                     tf.argmax(self.separate_lls_labels[i], 1)),
+                            tf.float32))
 
         with tf.name_scope('modified_accuracy'):
             mod_label = self.labels_pl
@@ -259,7 +338,14 @@ class Model:
             self.lr = produce_lr_tensor()
 
         with tf.name_scope('adam_optimizer'):
-            self.train_step = tf.train.AdamOptimizer(self.lr).minimize(self.cross_entropy)
+            self.train_step = tf.train.AdamOptimizer(self.lr).minimize(self.cross_entropy + self.reg_loss)
+
+            self.separate_lls_train_step = None
+            if self.train_separate_ll:
+                self.separate_lls_train_step = []
+                for i in range(self.separate_ll_count):
+                    self.separate_lls_train_step.append(
+                        tf.train.AdamOptimizer(self.lr).minimize(self.separate_lls_loss[i]))
 
     def train(self, train_dataset_type='train_without_val', noise_ratio=0, noise_seed=None):
         #
@@ -286,17 +372,22 @@ class Model:
 
         Y0_current = np.array(Y0)
 
-        clean_indices = np.nonzero(self.is_sample_clean)[0]
-        noised_indices = np.nonzero(1 - self.is_sample_clean)[0]
+        self.clean_indices = np.nonzero(self.is_sample_clean)[0]
+        self.noised_indices = np.nonzero(1 - self.is_sample_clean)[0]
 
-        self.X_current_clean = X_current[clean_indices]
-        self.Y_current_clean = Y_current[clean_indices]
-        self.X_current_noised = X_current[noised_indices]
-        self.Y_current_noised = Y_current[noised_indices]
-        self.Y0_current_noised = Y0_current[noised_indices]
+        self.X_current_clean = X_current[self.clean_indices]
+        self.Y_current_clean = Y_current[self.clean_indices]
+        self.X_current_noised = X_current[self.noised_indices]
+        self.Y_current_noised = Y_current[self.noised_indices]
+        self.Y0_current_noised = Y0_current[self.noised_indices]
 
         X_test, Y_test = read_dataset(name=self.dataset_name, type='test')
         X_validation, Y_validation = read_dataset(name=self.dataset_name, type='validation')
+
+        Y_validation_ind = np.argmax(Y_validation, 1)
+        Y_validation_ind_per_class = [[] for c in range(self.n_classes)]
+        for i in range(X_validation.shape[0]):
+            Y_validation_ind_per_class[Y_validation_ind[i]].append(i)
 
         current_loss_weights = np.full((self.current_dataset_size,), 1, np.float32)
 
@@ -352,6 +443,17 @@ class Model:
         per_epoch_summaries.append(tf.summary.histogram(name='validation_accuracy',
                                                         values=validation_accuracies_summary_pl))
 
+        separate_ll_train_accuracy_summary_pl = None
+        separate_ll_validation_accuracy_summary_pl = None
+        if self.train_separate_ll:
+            separate_ll_train_accuracy_summary_pl = tf.placeholder(tf.float32)
+            per_epoch_summaries.append(tf.summary.scalar(name='separate_ll_train_accuracy',
+                                                         tensor=separate_ll_train_accuracy_summary_pl))
+
+            separate_ll_validation_accuracy_summary_pl = tf.placeholder(tf.float32)
+            per_epoch_summaries.append(tf.summary.scalar(name='separate_ll_validation_accuracy',
+                                                         tensor=separate_ll_validation_accuracy_summary_pl))
+
         modified_labels_accuracy_summary_scalar = None
         new_labels_accuracy_summary_scalar = None
         new_labels_accuracy_with_noise_summary_scalar = None
@@ -387,16 +489,23 @@ class Model:
                                                          tensor=new_labels_accuracy_on_noised_only_summary_scalar))
 
         lid_summary = None
+        separate_lls_mean_lid_summary = None
+        separate_lls_mean_lid_summary_scalar = None
         lid_summary_scalar = None
         alpha_summary_scalar = None
         if self.to_log(0):
             lid_summary_scalar = tf.placeholder(tf.float32)
             lid_summary = tf.summary.scalar(name='LID', tensor=lid_summary_scalar)
+            per_epoch_summaries.append(lid_summary)
+
+            if self.train_separate_ll:
+                separate_lls_mean_lid_summary_scalar = tf.placeholder(tf.float32)
+                separate_lls_mean_lid_summary = tf.summary.scalar(name='separate lls mean LID',
+                                                            tensor=separate_lls_mean_lid_summary_scalar)
+                per_epoch_summaries.append(separate_lls_mean_lid_summary)
 
             alpha_summary_scalar = tf.placeholder(tf.float32)
-            alpha_summary = tf.summary.scalar(name='alpha', tensor=alpha_summary_scalar)
-
-            per_epoch_summaries.extend([lid_summary, alpha_summary])
+            per_epoch_summaries.append(tf.summary.scalar(name='alpha', tensor=alpha_summary_scalar))
 
         per_epoch_summary = tf.summary.merge(per_epoch_summaries)
 
@@ -436,7 +545,7 @@ class Model:
 
             lid_per_epoch = None
             if self.update_mode == 1 or self.to_log(0) or self.to_log(4):
-                lid_calculator = self._calc_lid(X_current, Y_current)
+                lid_calculator = self.calc_lid(self.lid_calc_op, batch_iterator(X_current, Y_current, LID_BATCH_SIZE))
                 initial_lid_score = lid_calculator.mean
                 lid_per_epoch = []
                 if initial_lid_score is not None:
@@ -444,10 +553,20 @@ class Model:
 
                 print('initial LID score:', initial_lid_score)
 
+                if self.train_separate_ll:
+                    separate_lls_lid_calculator = self.calc_separate_lls_mean_lid(X_current, Y_current,
+                                                                                  Y_current_ind_per_class)
+
                 if self.to_log(0):
                     lid_summary_str = self.sess.run(lid_summary, feed_dict={lid_summary_scalar: initial_lid_score})
                     summary_writer.add_summary(lid_summary_str, 0)
                     summary_writer.flush()
+
+                    if self.train_separate_ll:
+                        separate_ll_lid_summary_str = separate_lls_mean_lid_summary.eval(
+                            feed_dict={separate_lls_mean_lid_summary_scalar: separate_lls_lid_calculator.mean})
+                        summary_writer.add_summary(separate_ll_lid_summary_str, 0)
+                        summary_writer.flush()
 
                 if self.to_log(4):
                     folder_to_save = os.path.join('logs/LID/per_class', self.dataset_name, self.model_name)
@@ -456,7 +575,7 @@ class Model:
                     np.save(os.path.join(folder_to_save, '0'), lid_calculator.mean_per_class)
 
             if self.to_log(5):
-                class_wise_lid_calculator = self._calc_lid_class_wise(X_current, Y_current, Y_current_ind_per_class)
+                class_wise_lid_calculator = self.calc_lid_class_wise(X_current, Y_current, Y_current_ind_per_class)
 
                 folder_to_save = os.path.join('logs/LID/class_wise', self.dataset_name, self.model_name)
                 if not os.path.exists(folder_to_save):
@@ -516,7 +635,7 @@ class Model:
                     #
 
                     # TODO: would unaugmented data change LDA algo performance?
-                    self._compute_LDA(X_augmented, Y_current, Y_current_cls_ind, Y_current_ind_per_class)
+                    self.compute_LDA(X_augmented, Y_current, Y_current_cls_ind, Y_current_ind_per_class)
 
                 #
                 # TRAIN
@@ -549,6 +668,13 @@ class Model:
                         summary_str = self.sess.run(summary, feed_dict=feed_dict)
                         summary_writer.add_summary(summary_str, i_step)
                         summary_writer.flush()
+
+                #
+                # TRAIN SEPARATE LINEAR LAYERS
+                #
+
+                self.train_separate_lls(X_augmented, Y_current, Y_current_ind_per_class, i_epoch_rel,
+                                        current_loss_weights)
 
                 #
                 # LOG THINGS
@@ -608,13 +734,15 @@ class Model:
 
                 print()
 
-                clean_train_accuracy_calculator = self.calc_metric_on_dataset(X_current, Y0_current, self.accuracy)
+                clean_train_accuracy_calculator = self.calc_metric_on_dataset(X_current, Y0_current,
+                                                                              self.batch_accuracies)
                 clean_train_accuracy = clean_train_accuracy_calculator.mean
                 summary_feed_dict[clean_train_accuracies_summary_pl] = clean_train_accuracy_calculator.values
                 print('clean train accuracy:', clean_train_accuracy)
 
                 train_accuracy_on_clean_calculator = self.calc_metric_on_dataset(self.X_current_clean,
-                                                                                 self.Y_current_clean, self.accuracy)
+                                                                                 self.Y_current_clean,
+                                                                                 self.batch_accuracies)
                 train_accuracy_on_clean = train_accuracy_on_clean_calculator.mean
                 summary_feed_dict[train_accuracies_on_clean_summary_pl] = train_accuracy_on_clean_calculator.values
                 print('train accuracy on clean samples:', train_accuracy_on_clean)
@@ -622,7 +750,7 @@ class Model:
                 if len(self.X_current_noised) > 0:
                     clean_train_accuracy_on_noised_calculator = self.calc_metric_on_dataset(self.X_current_noised,
                                                                                             self.Y0_current_noised,
-                                                                                            self.accuracy)
+                                                                                            self.batch_accuracies)
                     clean_train_accuracy_on_noised = clean_train_accuracy_on_noised_calculator.mean
                     summary_feed_dict[clean_train_accuracies_on_noised_summary_pl] = \
                         clean_train_accuracy_on_noised_calculator.values
@@ -630,7 +758,7 @@ class Model:
 
                     noised_train_accuracy_on_noised_calculator = self.calc_metric_on_dataset(self.X_current_noised,
                                                                                              self.Y_current_noised,
-                                                                                             self.accuracy)
+                                                                                             self.batch_accuracies)
                     noised_train_accuracy_on_noised = noised_train_accuracy_on_noised_calculator.mean
                     summary_feed_dict[noised_train_accuracies_on_noised_summary_pl] = \
                         noised_train_accuracy_on_noised_calculator.values
@@ -641,15 +769,31 @@ class Model:
 
                 print()
 
-                test_accuracy_calculator = self.calc_metric_on_dataset(X_test, Y_test, self.accuracy)
+                test_accuracy_calculator = self.calc_metric_on_dataset(X_test, Y_test, self.batch_accuracies)
                 test_accuracy = test_accuracy_calculator.mean
                 summary_feed_dict[test_accuracies_summary_pl] = test_accuracy_calculator.values
                 print('test accuracy:', test_accuracy)
 
-                validation_accuracy_calculator = self.calc_metric_on_dataset(X_validation, Y_validation, self.accuracy)
+                validation_accuracy_calculator = self.calc_metric_on_dataset(X_validation, Y_validation,
+                                                                             self.batch_accuracies)
                 validation_accuracy = validation_accuracy_calculator.mean
                 summary_feed_dict[validation_accuracies_summary_pl] = validation_accuracy_calculator.values
                 print('validation accuracy:', validation_accuracy)
+
+                if self.train_separate_ll:
+                    print()
+
+                    separate_ll_train_accuracy_calculator = self.calc_separate_ll_metric_on_dataset(
+                        X_current, Y_current, Y_current_ind_per_class, self.separate_lls_accuracy, False)
+                    separate_ll_train_accuracy = separate_ll_train_accuracy_calculator.mean
+                    print('Separate linear layer train accuracy:', separate_ll_train_accuracy)
+                    summary_feed_dict[separate_ll_train_accuracy_summary_pl] = separate_ll_train_accuracy
+
+                    separate_ll_validation_accuracy_calculator = self.calc_separate_ll_metric_on_dataset(
+                        X_validation, Y_validation, Y_validation_ind_per_class, self.separate_lls_accuracy, False)
+                    separate_ll_validation_accuracy = separate_ll_validation_accuracy_calculator.mean
+                    print('Separate linear layer validation accuracy:', separate_ll_validation_accuracy)
+                    summary_feed_dict[separate_ll_validation_accuracy_summary_pl] = separate_ll_validation_accuracy
 
                 #
                 # 2. MODIFIED/NEW LABELS SIMILARITIES
@@ -664,11 +808,12 @@ class Model:
                         base_feed_dict[self.block_inv_covariance_pl] = self.block_inv_covariances
 
                     metric_calculators = self.calc_metric_on_dataset(
-                        X_current, Y0_current, keep_values=False, base_feed_dict=base_feed_dict,
+                        X_current, Y_current, keep_values=False, base_feed_dict=base_feed_dict,
                         metric_ops=[
                             self.modified_labels_similarity,
                             self.new_labels_similarity,
-                        ])
+                        ],
+                        Y_ref=Y0_current)
                     modified_labels_similarity_calculator, new_labels_similarity_calculator = metric_calculators
 
                     modified_labels_accuracy = modified_labels_similarity_calculator.mean
@@ -682,7 +827,7 @@ class Model:
 
                     new_labels_similarity_with_noise_calculator = self.calc_metric_on_dataset(
                         X_current, Y_current, self.new_labels_similarity, keep_values=False,
-                        base_feed_dict=base_feed_dict)
+                        base_feed_dict=base_feed_dict, Y_ref=Y_current)
                     new_labels_accuracy_with_noise = new_labels_similarity_with_noise_calculator.mean
                     summary_feed_dict[new_labels_accuracy_with_noise_summary_scalar] = new_labels_accuracy_with_noise
                     print('accuracy of new labels compared to noised labels on a train set:',
@@ -690,7 +835,7 @@ class Model:
 
                     new_labels_similarity_on_clean_only_calculator = self.calc_metric_on_dataset(
                         self.X_current_clean, self.Y_current_clean, self.new_labels_similarity, keep_values=False,
-                        base_feed_dict=base_feed_dict)
+                        base_feed_dict=base_feed_dict, Y_ref=self.Y_current_clean)
                     new_labels_accuracy_on_clean_only = new_labels_similarity_on_clean_only_calculator.mean
                     summary_feed_dict[new_labels_accuracy_on_clean_only_summary_scalar] = \
                         new_labels_accuracy_on_clean_only
@@ -699,7 +844,7 @@ class Model:
 
                     new_labels_similarity_on_noised_only_calculator = self.calc_metric_on_dataset(
                         self.X_current_noised, self.Y_current_noised, self.new_labels_similarity, keep_values=False,
-                        base_feed_dict=base_feed_dict)
+                        base_feed_dict=base_feed_dict, Y_ref=Y0_current[self.noised_indices])
                     new_labels_accuracy_on_noised_only = new_labels_similarity_on_noised_only_calculator.mean
                     print('accuracy of new labels on noised samples only on a train set:',
                           new_labels_accuracy_on_noised_only)
@@ -712,25 +857,31 @@ class Model:
                     #
 
                     # TODO: would augmented data change LIDs?
-                    lid_calculator = self._calc_lid(X_current, Y_current)
+                    lid_calculator = self.calc_lid(self.lid_calc_op, batch_iterator(X_current, Y_current, LID_BATCH_SIZE))
                     new_lid_score = lid_calculator.mean
                     lid_per_epoch.append(new_lid_score)
 
                     print('\nLID score after %dth epoch: %g' % (i_epoch_tot, new_lid_score,))
+
+                    if self.train_separate_ll:
+                        separate_lls_lid_calculator = self.calc_separate_lls_mean_lid(X_current, Y_current,
+                                                                                      Y_current_ind_per_class)
 
                     if self.to_log(4):
                         folder_to_save = os.path.join('logs/LID/per_class', self.dataset_name, self.model_name)
                         np.save(os.path.join(folder_to_save, str(i_epoch_tot)), lid_calculator.mean_per_class)
 
                 if self.to_log(5):
-                    class_wise_lid_calculator = self._calc_lid_class_wise(X_current, Y_current,
-                                                                          Y_current_ind_per_class)
+                    class_wise_lid_calculator = self.calc_lid_class_wise(X_current, Y_current,
+                                                                         Y_current_ind_per_class)
 
                     folder_to_save = os.path.join('logs/LID/class_wise', self.dataset_name, self.model_name)
                     np.save(os.path.join(folder_to_save, str(i_epoch_tot)), class_wise_lid_calculator.mean_per_class)
 
                 if self.to_log(0):
                     summary_feed_dict[lid_summary_scalar] = lid_per_epoch[-1]
+                    if self.train_separate_ll:
+                        summary_feed_dict[separate_lls_mean_lid_summary_scalar] = separate_lls_lid_calculator.mean
                     summary_feed_dict[alpha_summary_scalar] = alpha_value
 
                 summary_str = self.sess.run(per_epoch_summary, summary_feed_dict)
@@ -850,14 +1001,14 @@ class Model:
                             Y_current_ind_per_class[Y_current_ind[i]].append(i)
                         self.is_sample_clean = (Y_current_ind == Y0_cls_ind).astype(int)
 
-                    clean_indices = np.nonzero(self.is_sample_clean)[0]
-                    noised_indices = np.nonzero(1 - self.is_sample_clean)[0]
+                    self.clean_indices = np.nonzero(self.is_sample_clean)[0]
+                    self.noised_indices = np.nonzero(1 - self.is_sample_clean)[0]
 
-                    self.X_current_clean = X_current[clean_indices]
-                    self.Y_current_clean = Y_current[clean_indices]
-                    self.X_current_noised = X_current[noised_indices]
-                    self.Y_current_noised = Y_current[noised_indices]
-                    self.Y0_current_noised = Y0_current[noised_indices]
+                    self.X_current_clean = X_current[self.clean_indices]
+                    self.Y_current_clean = Y_current[self.clean_indices]
+                    self.X_current_noised = X_current[self.noised_indices]
+                    self.Y_current_noised = Y_current[self.noised_indices]
+                    self.Y0_current_noised = Y0_current[self.noised_indices]
 
                     alpha_value = 1
                     n_label_resets_done += 1
@@ -1001,17 +1152,20 @@ class Model:
 
             print('test accuracy %g' % test_accuracy)
 
-    def _calc_lid(self, X, Y):
+    def calc_lid(self, lid_calc_op, batch_iter):
         lid_calculator = DatasetMetricCalculator(class_count=self.n_classes)
 
         i_batch = -1
-        for batch in batch_iterator(X, Y, LID_BATCH_SIZE, True):
+        for batch in batch_iter:
             i_batch += 1
 
             if i_batch == LID_BATCH_CNT:
                 break
 
-            batch_lid_scores = self.lid_calc_op.eval(feed_dict={self.nn_input_pl: batch[0], self.is_training: False})
+            feed_dict = {self.nn_input_pl: batch[0], self.labels_pl: batch[1],
+                         self.is_training: False}
+
+            batch_lid_scores = lid_calc_op.eval(feed_dict)
             if batch_lid_scores.min() < 0:
                 print('negative lid!', list(batch_lid_scores))
                 break
@@ -1023,7 +1177,37 @@ class Model:
 
         return lid_calculator
 
-    def _calc_lid_class_wise(self, X, Y, Y_ind_per_class):
+    def calc_separate_lls_mean_lid(self, X, Y, Y_ind_per_class):
+        lid_calculator = DatasetMetricCalculator(class_count=self.n_classes)
+
+        for i in range(self.separate_ll_count):
+            ll_class_indices = []
+            for c in self.separate_lls_classes[i]:
+                ll_class_indices.extend(Y_ind_per_class[c])
+
+            i_batch = -1
+            for batch in batch_iterator(X[ll_class_indices], Y[ll_class_indices], LID_BATCH_SIZE, True):
+                i_batch += 1
+
+                if i_batch == LID_BATCH_CNT or batch[0].shape[0] < LID_K + 1:
+                    break
+
+                feed_dict = {self.nn_input_pl: batch[0], self.labels_pl: batch[1],
+                             self.is_training: False}
+
+                batch_lid_scores = self.separate_lls_lid_calc_op[i].eval(feed_dict)
+                if batch_lid_scores.min() < 0:
+                    print('negative lid!', list(batch_lid_scores))
+                    break
+                if batch_lid_scores.max() > 10000:
+                    print('lid is too big!', list(batch_lid_scores))
+                    break
+
+                lid_calculator.add_batch_values_with_labels(batch_lid_scores, batch[1])
+
+        return lid_calculator
+
+    def calc_lid_class_wise(self, X, Y, Y_ind_per_class):
         lid_calculator = DatasetMetricCalculator(class_count=self.n_classes)
 
         features = np.empty((X.shape[0], self.lid_layer_op.shape[-1]), np.float32)
@@ -1048,7 +1232,7 @@ class Model:
 
         return lid_calculator
 
-    def _compute_LDA(self, X, Y, Y_ind, Y_ind_per_class):
+    def compute_LDA(self, X, Y, Y_ind, Y_ind_per_class):
         print('Computing LDA parameters')
 
         features = np.empty((self.current_dataset_size, self.total_hidden_width))
@@ -1140,7 +1324,8 @@ class Model:
             self.block_inv_covariances = np.append(self.block_inv_covariances,
                                                    np.expand_dims(inv_covariance, 0), 0)
 
-    def calc_metric_on_dataset(self, X, Y, metric_ops, keep_values=True, base_feed_dict=None):
+    def calc_metric_on_dataset(self, X, Y, metric_ops, keep_values=True, base_feed_dict=None, batch_iter=None,
+                               Y_ref=None):
         if not isinstance(metric_ops, list):
             metric_ops = [metric_ops]
 
@@ -1153,14 +1338,19 @@ class Model:
         for _ in range(len(metric_ops)):
             metric_calculators.append(DatasetMetricCalculator(keep_values=keep_values, class_count=self.n_classes))
 
-        for batch in batch_iterator_with_indices(X, Y, BATCH_SIZE, False):
+        if batch_iter is None:
+            batch_iter = batch_iterator_with_indices(X, Y, BATCH_SIZE, False)
+
+        for batch in batch_iter:
             feed_dict[self.nn_input_pl] = batch[0]
             feed_dict[self.labels_pl] = batch[1]
+            if Y_ref is not None:
+                feed_dict[self.computed_labels_similarity_reference_pl] = Y_ref[batch[2]]
             feed_dict[self.is_training] = False
 
             metrics = self.sess.run(metric_ops, feed_dict)
 
-            labels_argmaxed = np.argmax(batch[1])
+            labels_argmaxed = np.argmax(batch[1], -1)
             for i in range(len(metrics)):
                 metric_calculators[i].add_batch_values_with_labels_argmaxed(metrics[i], labels_argmaxed)
 
@@ -1168,3 +1358,43 @@ class Model:
             metric_calculators = metric_calculators[0]
 
         return metric_calculators
+
+    def calc_separate_ll_metric_on_dataset(self, X, Y, Y_ind_per_class, metric_ops, keep_values=True,
+                                           base_feed_dict=None):
+        feed_dict = {}
+        if base_feed_dict is not None:
+            for k, v in base_feed_dict.items():
+                feed_dict[k] = v
+
+        metric_calculator = DatasetMetricCalculator(keep_values=keep_values, class_count=self.n_classes)
+
+        for i in range(self.separate_ll_count):
+            ll_class_indices = []
+            for c in self.separate_lls_classes[i]:
+                ll_class_indices.extend(Y_ind_per_class[c])
+
+            for batch in batch_iterator(X[ll_class_indices], Y[ll_class_indices], BATCH_SIZE, False):
+                feed_dict[self.nn_input_pl] = batch[0]
+                feed_dict[self.labels_pl] = batch[1]
+                feed_dict[self.is_training] = False
+
+                metric = self.sess.run(metric_ops[i], feed_dict)
+                metric_calculator.add_batch_values_with_labels(metric, batch[1])
+
+        return metric_calculator
+
+    def train_separate_lls(self, X, Y, Y_ind_per_class, i_epoch_rel, current_loss_weights):
+        for i in range(self.separate_ll_count):
+            ll_class_indices = []
+            for c in self.separate_lls_classes[i]:
+                ll_class_indices.extend(Y_ind_per_class[c])
+
+            for batch in batch_iterator_with_indices(X[ll_class_indices], Y[ll_class_indices], BATCH_SIZE, True):
+                feed_dict = {}
+                feed_dict[self.nn_input_pl] = batch[0]
+                feed_dict[self.labels_pl] = batch[1]
+                feed_dict[self.is_training] = True
+                feed_dict[self.rel_epoch_pl] = i_epoch_rel
+                feed_dict[self.loss_weights_pl] = current_loss_weights[batch[2]]
+
+                self.separate_lls_train_step[i].run(feed_dict)

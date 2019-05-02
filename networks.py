@@ -96,6 +96,7 @@ def build_mnist(x, is_training, n_blocks, block_width):
     # Second pooling layer.
     with tf.name_scope('pool2'):
         h_pool2 = max_pool_2x2(h_conv2)
+        h_pool2_flat = tf.reshape(h_pool2, [-1, 7 * 7 * 64])
 
     if n_blocks == 1:
         # Fully connected layer 1 -- after 2 round of downsampling, our 28x28 image
@@ -104,7 +105,6 @@ def build_mnist(x, is_training, n_blocks, block_width):
             W_fc1 = weight_variable([7 * 7 * 64, block_width])
             b_fc1 = bias_variable([block_width])
 
-            h_pool2_flat = tf.reshape(h_pool2, [-1, 7 * 7 * 64])
             a_fc1 = tf.matmul(h_pool2_flat, W_fc1) + b_fc1
             b_norm_fc1 = tf.identity(batch_norm(a_fc1, is_training), name='pre_lid_input')
             h_fc1 = tf.nn.relu(b_norm_fc1, name='lid_input')
@@ -118,14 +118,12 @@ def build_mnist(x, is_training, n_blocks, block_width):
 
             preds = tf.nn.softmax(y_conv, -1)
 
-        return b_norm_fc1, h_fc1, y_conv, preds
+        return h_pool2_flat, b_norm_fc1, h_fc1, y_conv, preds
 
     else:
         # Fully connected layer 1 -- after 2 round of downsampling, our 28x28 image
         # is down to 7x7x64 feature maps -- maps this to 128 lid_features.
         with tf.name_scope('fc1'):
-            h_pool2_flat = tf.reshape(h_pool2, [-1, 7 * 7 * 64])
-
             Ws_fc1 = []
             bs_fc1 = []
             hs_fc1 = []
@@ -161,10 +159,10 @@ def build_mnist(x, is_training, n_blocks, block_width):
 
             logits = tf.reduce_sum(blocks_logits * block_w, 1, name='logits')
 
-        return h_fc1, a_fc1, logits, preds
+        return h_pool2_flat, h_fc1, a_fc1, logits, preds
 
 
-def build_cifar_10(x, is_training, n_blocks, block_width):
+def build_cifar_10(x, is_training, n_blocks, block_width, n_classes):
     batch_size = tf.shape(x)[0]
 
     # Block 1
@@ -238,14 +236,14 @@ def build_cifar_10(x, is_training, n_blocks, block_width):
             h_fc1 = tf.nn.relu(normed_a_fc1, name='lid_input')
 
         with tf.name_scope('fc2'):
-            W_fc2 = weight_variable([block_width, N_CLASSES])
-            b_fc2 = bias_variable([N_CLASSES])
+            W_fc2 = weight_variable([block_width, n_classes])
+            b_fc2 = bias_variable([n_classes])
 
             a_fc2 = tf.identity(tf.matmul(h_fc1, W_fc2) + b_fc2, name='logits')
 
             preds = tf.nn.softmax(a_fc2, -1)
 
-        return normed_a_fc1, h_fc1, a_fc2, preds, reg_sum
+        return h_flattened, normed_a_fc1, h_fc1, a_fc2, preds, reg_sum
     else:
         with tf.name_scope('fc1'):
             Ws_fc1 = []
@@ -277,8 +275,8 @@ def build_cifar_10(x, is_training, n_blocks, block_width):
         # Map the 1024 lid_features to 10 classes, one for each digit
         with tf.name_scope('fc2'):
             for i in range(n_blocks):
-                Ws_fc2.append(weight_variable([block_width, N_CLASSES], 'W_' + str(i + 1)))
-                bs_fc2.append(bias_variable([N_CLASSES], 'b_' + str(i + 1)))
+                Ws_fc2.append(weight_variable([block_width, n_classes], 'W_' + str(i + 1)))
+                bs_fc2.append(bias_variable([n_classes], 'b_' + str(i + 1)))
                 logits_fc2.append(tf.identity(tf.matmul(acts_fc1[i], Ws_fc2[i]) + bs_fc2[i], 'logits_' + str(i + 1)))
 
             block_w = tf.reshape(tf.one_hot(tf.random_uniform((batch_size,), 0, n_blocks, dtype=tf.int32), n_blocks),
@@ -289,4 +287,23 @@ def build_cifar_10(x, is_training, n_blocks, block_width):
 
             logits = tf.reduce_sum(blocks_logits * block_w, 1, name='logits')
 
-        return h_fc1, a_fc1, logits, preds, reg_sum
+        return h_flattened, h_fc1, a_fc1, logits, preds, reg_sum
+
+
+def linear_layer(x, is_training, width, n_classes, name='linear'):
+    with tf.name_scope(name):
+        with tf.name_scope('fc1'):
+            W_fc1 = weight_variable([int(x.shape[-1]), width])
+            b_fc1 = bias_variable([width])
+
+            a_fc1 = tf.matmul(x, W_fc1) + b_fc1
+            normed_a_fc1 = batch_norm(a_fc1, is_training)
+            hidden = tf.nn.relu(normed_a_fc1)
+
+        with tf.name_scope('fc2'):
+            W_fc2 = weight_variable([width, n_classes])
+            b_fc2 = bias_variable([n_classes])
+
+            logits = tf.matmul(hidden, W_fc2) + b_fc2
+
+    return hidden, logits
