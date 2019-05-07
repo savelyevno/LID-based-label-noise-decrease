@@ -1,4 +1,5 @@
 import tensorflow as tf
+import numpy as np
 
 from consts import LID_K, EPS, LID_BATCH_SIZE
 
@@ -16,6 +17,14 @@ def get_lid_calc_op(g_x):
 
     k_nearest_raw, _ = tf.nn.top_k(-distances, k=LID_K + 1, sorted=True)
     k_nearest = -k_nearest_raw[:, 1:]
+
+    max_distance_non_zero = tf.greater(k_nearest[:,  -1], EPS)
+    max_distance_non_zero_indices = tf.reshape(tf.where(max_distance_non_zero), (-1, ))
+    k_nearest = tf.gather(k_nearest, max_distance_non_zero_indices)
+
+    k_nearest = tf.cond(tf.equal(tf.shape(max_distance_non_zero_indices)[0], 0),
+                        lambda: np.array([[0]], dtype=np.float32),
+                        lambda: k_nearest)
 
     distance_ratios = tf.transpose(tf.multiply(tf.transpose(k_nearest), 1 / k_nearest[:, -1]))
     LIDs = - LID_K / tf.reduce_sum(tf.log(distance_ratios + EPS), 1)

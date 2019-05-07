@@ -1,6 +1,7 @@
 import tensorflow as tf
 from tensorflow.python.ops import control_flow_ops
 import numpy as np
+from tensorflow.keras.layers import AveragePooling2D, Flatten
 
 from consts import N_CLASSES
 
@@ -222,6 +223,10 @@ def build_cifar_10(x, is_training, n_blocks, block_width, n_classes):
     with tf.name_scope('flatten'):
         h_flattened = tf.reshape(h_pool3, [-1, 4 * 4 * 196])
 
+    # conv_res = AveragePooling2D(pool_size=(4, 4), strides=(1, 1), padding="valid")(h_pool3)
+    # conv_res = Flatten()(conv_res)
+    conv_res = h_flattened
+
     reg_sum = None
 
     if n_blocks == 1:
@@ -243,7 +248,7 @@ def build_cifar_10(x, is_training, n_blocks, block_width, n_classes):
 
             preds = tf.nn.softmax(a_fc2, -1)
 
-        return h_flattened, normed_a_fc1, h_fc1, a_fc2, preds, reg_sum
+        return conv_res, normed_a_fc1, h_fc1, a_fc2, preds, reg_sum
     else:
         with tf.name_scope('fc1'):
             Ws_fc1 = []
@@ -287,7 +292,7 @@ def build_cifar_10(x, is_training, n_blocks, block_width, n_classes):
 
             logits = tf.reduce_sum(blocks_logits * block_w, 1, name='logits')
 
-        return h_flattened, h_fc1, a_fc1, logits, preds, reg_sum
+        return conv_res, h_fc1, a_fc1, logits, preds, reg_sum
 
 
 def linear_layer(x, is_training, width, n_classes, name='linear'):
@@ -295,6 +300,8 @@ def linear_layer(x, is_training, width, n_classes, name='linear'):
         with tf.name_scope('fc1'):
             W_fc1 = weight_variable([int(x.shape[-1]), width])
             b_fc1 = bias_variable([width])
+
+            reg_sum = tf.nn.l2_loss(W_fc1)
 
             a_fc1 = tf.matmul(x, W_fc1) + b_fc1
             normed_a_fc1 = batch_norm(a_fc1, is_training)
@@ -304,6 +311,8 @@ def linear_layer(x, is_training, width, n_classes, name='linear'):
             W_fc2 = weight_variable([width, n_classes])
             b_fc2 = bias_variable([n_classes])
 
+            reg_sum += tf.nn.l2_loss(W_fc2)
+
             logits = tf.matmul(hidden, W_fc2) + b_fc2
 
-    return hidden, logits
+    return hidden, logits, reg_sum

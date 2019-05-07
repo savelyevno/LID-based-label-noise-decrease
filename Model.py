@@ -26,7 +26,8 @@ class Model:
                  n_blocks=1, block_width=256,
                  n_label_resets=0, cut_train_set=False, mod_labels_after_last_reset=True, use_loss_weights=False,
                  calc_lid_min_before_init_epoch=True,
-                 train_separate_ll=False, separate_ll_class_count=2, separate_ll_count=10, separate_ll_fc_width=16):
+                 train_separate_ll=False, separate_ll_class_count=2, separate_ll_count=10, separate_ll_fc_width=16,
+                    separate_ll_lr=None, separate_ll_reg_coef=5e-4):
         """
 
         :param dataset_name:         dataset name: mnist/cifar-10/cifar-100
@@ -64,6 +65,8 @@ class Model:
         self.separate_ll_class_count = separate_ll_class_count
         self.separate_ll_count = separate_ll_count
         self.separate_ll_fc_width = separate_ll_fc_width
+        self.separate_ll_lr = separate_ll_lr
+        self.separate_ll_reg_coef = separate_ll_reg_coef
 
         self.block_width = block_width
         self.total_hidden_width = block_width * n_blocks
@@ -96,7 +99,10 @@ class Model:
             if len(all_possible_class_groups) < self.separate_ll_count:
                 raise Exception("Not enough class combinations for separate linear layers")
 
+            after_seed = np.random.randint(1 << 30)
+            np.random.seed(0)
             self.separate_lls_classes = np.random.permutation(all_possible_class_groups)[:self.separate_ll_count]
+            np.random.seed(after_seed)
 
             self.separate_ll_classes_inv_map = []
             for i in range(self.separate_ll_count):
@@ -145,12 +151,18 @@ class Model:
         self.separate_lls_preds = None
         self.separate_lls_lid_calc_op = None
         self.separate_lls_logits = None
+        self.separate_lls_is_training = None
+        self.separate_lls_reg_sum = None
         if self.train_separate_ll:
             self.separate_lls_labels = []
             self.separate_lls_preds = []
             self.separate_lls_lid_calc_op = []
             self.separate_lls_logits = []
+            self.separate_lls_is_training = []
+            self.separate_lls_reg_sum = []
             for i in range(self.separate_ll_count):
+                is_training = tf.placeholder(dtype=tf.bool, name='is_training')
+                self.separate_lls_is_training.append(is_training)
                 batch_elements_belonging_to_selected_classes_indices = tf.reshape(
                     tf.where(
                         tf.reduce_any(
@@ -159,8 +171,8 @@ class Model:
                             axis=1)),
                     (-1, ))
 
-                separate_ll_input = tf.stop_gradient(
-                    tf.gather(conv_res, batch_elements_belonging_to_selected_classes_indices))
+                separate_ll_input = tf.gather(tf.stop_gradient(conv_res),
+                                              batch_elements_belonging_to_selected_classes_indices)
 
                 self.separate_lls_labels.append(tf.one_hot(
                         tf.gather(
@@ -169,12 +181,12 @@ class Model:
                             batch_elements_belonging_to_selected_classes_indices),
                         self.separate_ll_class_count))
 
-                separate_ll_hidden_op, separate_lls_logits = linear_layer(separate_ll_input, self.is_training,
-                                                                          self.separate_ll_fc_width,
-                                                                          self.separate_ll_class_count)
+                separate_ll_hidden_op, separate_lls_logits, separate_lls_reg_sum = linear_layer(
+                    separate_ll_input, is_training, self.separate_ll_fc_width, self.separate_ll_class_count)
                 self.separate_lls_logits.append(separate_lls_logits)
                 self.separate_lls_preds.append(tf.nn.softmax(separate_lls_logits))
                 self.separate_lls_lid_calc_op.append(get_lid_calc_op(separate_ll_hidden_op))
+                self.separate_lls_reg_sum.append(separate_lls_reg_sum)
 
         #
         # PREPARE FOR LABEL CHANGING
@@ -293,8 +305,10 @@ class Model:
             if self.train_separate_ll:
                 self.separate_lls_loss = []
                 for i in range(self.separate_ll_count):
-                    self.separate_lls_loss.append(tf.nn.softmax_cross_entropy_with_logits_v2(
-                        labels=self.separate_lls_labels[i], logits=self.separate_lls_logits[i]))
+                    loss = self.separate_lls_reg_sum[i] * self.separate_ll_reg_coef + \
+                           tf.nn.softmax_cross_entropy_with_logits_v2(
+                                labels=self.separate_lls_labels[i], logits=self.separate_lls_logits[i])
+                    self.separate_lls_loss.append(loss)
 
         self.cross_entropy = tf.reduce_mean(cross_entropy * self.loss_weights_pl)
 
@@ -491,6 +505,8 @@ class Model:
         lid_summary = None
         separate_lls_mean_lid_summary = None
         separate_lls_mean_lid_summary_scalar = None
+        separate_lls_median_lid_summary_scalar = None
+        separate_lls_median_mean_lid_summary_scalar = None
         lid_summary_scalar = None
         alpha_summary_scalar = None
         if self.to_log(0):
@@ -501,8 +517,18 @@ class Model:
             if self.train_separate_ll:
                 separate_lls_mean_lid_summary_scalar = tf.placeholder(tf.float32)
                 separate_lls_mean_lid_summary = tf.summary.scalar(name='separate lls mean LID',
-                                                            tensor=separate_lls_mean_lid_summary_scalar)
+                                                                  tensor=separate_lls_mean_lid_summary_scalar)
                 per_epoch_summaries.append(separate_lls_mean_lid_summary)
+
+                separate_lls_median_lid_summary_scalar = tf.placeholder(tf.float32)
+                separate_lls_median_lid_summary = tf.summary.scalar(name='separate lls median LID',
+                                                                    tensor=separate_lls_median_lid_summary_scalar)
+                per_epoch_summaries.append(separate_lls_median_lid_summary)
+
+                separate_lls_median_mean_lid_summary_scalar = tf.placeholder(tf.float32)
+                separate_lls_median_mean_lid_summary = tf.summary.scalar(
+                    name='separate lls median mean LID', tensor=separate_lls_median_mean_lid_summary_scalar)
+                per_epoch_summaries.append(separate_lls_median_mean_lid_summary)
 
             alpha_summary_scalar = tf.placeholder(tf.float32)
             per_epoch_summaries.append(tf.summary.scalar(name='alpha', tensor=alpha_summary_scalar))
@@ -543,44 +569,45 @@ class Model:
             # CALCULATE AND LOG INITIAL LID SCORE
             #
 
-            lid_per_epoch = None
-            if self.update_mode == 1 or self.to_log(0) or self.to_log(4):
-                lid_calculator = self.calc_lid(self.lid_calc_op, batch_iterator(X_current, Y_current, LID_BATCH_SIZE))
-                initial_lid_score = lid_calculator.mean
-                lid_per_epoch = []
-                if initial_lid_score is not None:
-                    lid_per_epoch.append(initial_lid_score)
-
-                print('initial LID score:', initial_lid_score)
-
-                if self.train_separate_ll:
-                    separate_lls_lid_calculator = self.calc_separate_lls_mean_lid(X_current, Y_current,
-                                                                                  Y_current_ind_per_class)
-
-                if self.to_log(0):
-                    lid_summary_str = self.sess.run(lid_summary, feed_dict={lid_summary_scalar: initial_lid_score})
-                    summary_writer.add_summary(lid_summary_str, 0)
-                    summary_writer.flush()
-
-                    if self.train_separate_ll:
-                        separate_ll_lid_summary_str = separate_lls_mean_lid_summary.eval(
-                            feed_dict={separate_lls_mean_lid_summary_scalar: separate_lls_lid_calculator.mean})
-                        summary_writer.add_summary(separate_ll_lid_summary_str, 0)
-                        summary_writer.flush()
-
-                if self.to_log(4):
-                    folder_to_save = os.path.join('logs/LID/per_class', self.dataset_name, self.model_name)
-                    if not os.path.exists(folder_to_save):
-                        os.makedirs(folder_to_save)
-                    np.save(os.path.join(folder_to_save, '0'), lid_calculator.mean_per_class)
-
-            if self.to_log(5):
-                class_wise_lid_calculator = self.calc_lid_class_wise(X_current, Y_current, Y_current_ind_per_class)
-
-                folder_to_save = os.path.join('logs/LID/class_wise', self.dataset_name, self.model_name)
-                if not os.path.exists(folder_to_save):
-                    os.makedirs(folder_to_save)
-                np.save(os.path.join(folder_to_save, '0'), class_wise_lid_calculator.mean_per_class)
+            lid_per_epoch = []
+            # if self.update_mode == 1 or self.to_log(0) or self.to_log(4):
+            #     lid_calculator = self.calc_lid(self.lid_calc_op, batch_iterator(X_current, Y_current, LID_BATCH_SIZE,
+            #                                                                     True))
+            #     initial_lid_score = lid_calculator.mean
+            #     lid_per_epoch = []
+            #     if initial_lid_score is not None:
+            #         lid_per_epoch.append(initial_lid_score)
+            #
+            #     print('initial LID score:', initial_lid_score)
+            #
+            #     if self.train_separate_ll:
+            #         separate_lls_lid_calculator = self.calc_separate_lls_lid(X_current, Y_current,
+            #                                                                  Y_current_ind_per_class)
+            #
+            #     if self.to_log(0):
+            #         lid_summary_str = self.sess.run(lid_summary, feed_dict={lid_summary_scalar: initial_lid_score})
+            #         summary_writer.add_summary(lid_summary_str, 0)
+            #         summary_writer.flush()
+            #
+            #         if self.train_separate_ll:
+            #             separate_ll_lid_summary_str = separate_lls_mean_lid_summary.eval(
+            #                 feed_dict={separate_lls_mean_lid_summary_scalar: separate_lls_lid_calculator.median})
+            #             summary_writer.add_summary(separate_ll_lid_summary_str, 0)
+            #             summary_writer.flush()
+            #
+            #     if self.to_log(4):
+            #         folder_to_save = os.path.join('logs/LID/per_class', self.dataset_name, self.model_name)
+            #         if not os.path.exists(folder_to_save):
+            #             os.makedirs(folder_to_save)
+            #         np.save(os.path.join(folder_to_save, '0'), lid_calculator.mean_per_class)
+            #
+            # if self.to_log(5):
+            #     class_wise_lid_calculator = self.calc_lid_class_wise(X_current, Y_current, Y_current_ind_per_class)
+            #
+            #     folder_to_save = os.path.join('logs/LID/class_wise', self.dataset_name, self.model_name)
+            #     if not os.path.exists(folder_to_save):
+            #         os.makedirs(folder_to_save)
+            #     np.save(os.path.join(folder_to_save, '0'), class_wise_lid_calculator.mean_per_class)
 
             #
             # FIT AUGMENTER
@@ -673,8 +700,10 @@ class Model:
                 # TRAIN SEPARATE LINEAR LAYERS
                 #
 
-                self.train_separate_lls(X_augmented, Y_current, Y_current_ind_per_class, i_epoch_rel,
-                                        current_loss_weights)
+                if self.train_separate_ll:
+                    print('\nStarted training separate linear_layers...')
+                    self.train_separate_lls(X_augmented, Y_current, Y_current_ind_per_class, i_epoch_rel,
+                                            current_loss_weights)
 
                 #
                 # LOG THINGS
@@ -857,15 +886,16 @@ class Model:
                     #
 
                     # TODO: would augmented data change LIDs?
-                    lid_calculator = self.calc_lid(self.lid_calc_op, batch_iterator(X_current, Y_current, LID_BATCH_SIZE))
+                    lid_calculator = self.calc_lid(self.lid_calc_op, batch_iterator(X_current, Y_current,
+                                                                                    LID_BATCH_SIZE, True))
                     new_lid_score = lid_calculator.mean
                     lid_per_epoch.append(new_lid_score)
 
                     print('\nLID score after %dth epoch: %g' % (i_epoch_tot, new_lid_score,))
 
                     if self.train_separate_ll:
-                        separate_lls_lid_calculator = self.calc_separate_lls_mean_lid(X_current, Y_current,
-                                                                                      Y_current_ind_per_class)
+                        separate_lls_combined_lid_calculator, separate_lls_lid_calculators = \
+                            self.calc_separate_lls_lid(X_current, Y_current, Y_current_ind_per_class)
 
                     if self.to_log(4):
                         folder_to_save = os.path.join('logs/LID/per_class', self.dataset_name, self.model_name)
@@ -881,7 +911,12 @@ class Model:
                 if self.to_log(0):
                     summary_feed_dict[lid_summary_scalar] = lid_per_epoch[-1]
                     if self.train_separate_ll:
-                        summary_feed_dict[separate_lls_mean_lid_summary_scalar] = separate_lls_lid_calculator.mean
+                        summary_feed_dict[separate_lls_mean_lid_summary_scalar] = \
+                            separate_lls_combined_lid_calculator.mean
+                        summary_feed_dict[separate_lls_median_lid_summary_scalar] = \
+                            separate_lls_combined_lid_calculator.median
+                        summary_feed_dict[separate_lls_median_mean_lid_summary_scalar] = \
+                            np.mean([it.median for it in separate_lls_lid_calculators])
                     summary_feed_dict[alpha_summary_scalar] = alpha_value
 
                 summary_str = self.sess.run(per_epoch_summary, summary_feed_dict)
@@ -1177,10 +1212,12 @@ class Model:
 
         return lid_calculator
 
-    def calc_separate_lls_mean_lid(self, X, Y, Y_ind_per_class):
-        lid_calculator = DatasetMetricCalculator(class_count=self.n_classes)
+    def calc_separate_lls_lid(self, X, Y, Y_ind_per_class):
+        combined_lid_calculator = DatasetMetricCalculator(class_count=self.n_classes)
+        lid_calculators = []
 
         for i in range(self.separate_ll_count):
+            lid_calculator = DatasetMetricCalculator(class_count=self.n_classes)
             ll_class_indices = []
             for c in self.separate_lls_classes[i]:
                 ll_class_indices.extend(Y_ind_per_class[c])
@@ -1193,19 +1230,21 @@ class Model:
                     break
 
                 feed_dict = {self.nn_input_pl: batch[0], self.labels_pl: batch[1],
-                             self.is_training: False}
+                             self.separate_lls_is_training[i]: False, self.is_training: False}
 
                 batch_lid_scores = self.separate_lls_lid_calc_op[i].eval(feed_dict)
-                if batch_lid_scores.min() < 0:
-                    print('negative lid!', list(batch_lid_scores))
-                    break
-                if batch_lid_scores.max() > 10000:
-                    print('lid is too big!', list(batch_lid_scores))
-                    break
 
-                lid_calculator.add_batch_values_with_labels(batch_lid_scores, batch[1])
+                correct_values = np.logical_and(np.greater(batch_lid_scores, 0), np.less(batch_lid_scores, 1e3))
+                correct_values_indices = np.nonzero(correct_values)[0]
+                # print(list(sorted(np.round(batch_lid_scores[correct_values_indices], 1), key=lambda x: -x)))
 
-        return lid_calculator
+                correct_batch_lid_scores = batch_lid_scores[correct_values_indices]
+                combined_lid_calculator.add_batch_values(correct_batch_lid_scores)
+                lid_calculator.add_batch_values(correct_batch_lid_scores)
+
+            lid_calculators.append(lid_calculator)
+
+        return combined_lid_calculator, lid_calculators
 
     def calc_lid_class_wise(self, X, Y, Y_ind_per_class):
         lid_calculator = DatasetMetricCalculator(class_count=self.n_classes)
@@ -1376,6 +1415,7 @@ class Model:
             for batch in batch_iterator(X[ll_class_indices], Y[ll_class_indices], BATCH_SIZE, False):
                 feed_dict[self.nn_input_pl] = batch[0]
                 feed_dict[self.labels_pl] = batch[1]
+                feed_dict[self.separate_lls_is_training[i]] = False
                 feed_dict[self.is_training] = False
 
                 metric = self.sess.run(metric_ops[i], feed_dict)
@@ -1393,7 +1433,8 @@ class Model:
                 feed_dict = {}
                 feed_dict[self.nn_input_pl] = batch[0]
                 feed_dict[self.labels_pl] = batch[1]
-                feed_dict[self.is_training] = True
+                feed_dict[self.separate_lls_is_training[i]] = True
+                feed_dict[self.is_training] = False
                 feed_dict[self.rel_epoch_pl] = i_epoch_rel
                 feed_dict[self.loss_weights_pl] = current_loss_weights[batch[2]]
 

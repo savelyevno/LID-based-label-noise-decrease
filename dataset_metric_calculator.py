@@ -13,6 +13,10 @@ class DatasetMetricCalculator:
         return self.sum / max(1, self.element_count)
 
     @property
+    def median(self):
+        return np.median(self.values)
+
+    @property
     def mean_per_class(self):
         return self.sum_per_class / np.maximum(1, self.element_count_per_class)
 
