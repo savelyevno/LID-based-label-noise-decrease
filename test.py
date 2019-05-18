@@ -1644,7 +1644,8 @@ def test_LID_EMA():
     # dataset_name = 'cifar-10'
     dataset_name = 'cifar-100'
 
-    model_name = '20_none_ep100_sepLL_2_20_16'
+    model_name = '60_sepLL_ep100_sepLL_2_75_64'
+    # model_name = '20_none_ep100_sepLL_2_20_16'
     # model_name = 'clean_none_ep50_sepLL_2_20_16'
 
     filename = 'separate_lls_mean_LID'
@@ -1701,9 +1702,11 @@ def test_LID_EMA():
     delta = data[i:, 1] / data[i, 1] - 1
     plt.plot(args[i:], delta, color='C2')
 
-    beta = 20
-    weights = np.exp(- np.arange(i, data.shape[0]) / data.shape[0] * np.maximum(delta, 0) * beta)
-    weights = [weights[:i + 1].min() for i in range(len(weights))]
+    # beta = 20
+    # weights = np.exp(- np.arange(i, data.shape[0]) / data.shape[0] * np.maximum(delta, 0) * beta)
+    # weights = [weights[:i + 1].min() for i in range(len(weights))]
+
+    weights = 1 - (1 - data[i, 1] / data[i:, 1]) - i / data.shape[0]
     plt.plot(args[i:], weights, color='C3')
 
     plt.grid()

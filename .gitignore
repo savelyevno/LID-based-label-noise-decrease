@@ -25,3 +25,5 @@ logs/LID/class_wise/*/*
 
 *.csv
 checkpoints_paper/*
+checkpoints_paper_improved/*
+checkpoints_paper_lid/*
