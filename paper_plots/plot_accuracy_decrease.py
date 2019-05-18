@@ -14,7 +14,7 @@ def plot():
 
     data = []
 
-    for sub_dir in ['20', '40', '60']:
+    for sub_dir in ['0', '20', '40', '60']:
     # for sub_dir in ['20', '40']:
         sub_dir_data = []
 
@@ -33,7 +33,7 @@ def plot():
                     new_data.append((float(row['Step']), float(row['Value'])))
                 sub_dir_data.append(new_data)
 
-        # if sub_dir == '40':
+        # if sub_dir == '60':
         #     sub_dir_data.append(sub_dir_data[-1])
 
         data.append(sub_dir_data)
@@ -43,15 +43,17 @@ def plot():
     meaned_data = np.mean(data, 1)
     meaned_data[:, :, 0] /= (49000 / 128)
 
-    plt.plot(meaned_data[0, 20:, 0], meaned_data[0, 20:, 1], label='20% noise')
-    plt.plot(meaned_data[1, 20:, 0], meaned_data[1, 20:, 1], label='40% noise')
-    plt.plot(meaned_data[2, 20:, 0], meaned_data[2, 20:, 1], label='60% noise')
+    plt.plot(meaned_data[0, 20:, 0], meaned_data[0, 20:, 1], label='0% noise')
+    plt.plot(meaned_data[1, 20:, 0], meaned_data[1, 20:, 1], label='20% noise')
+    plt.plot(meaned_data[2, 20:, 0], meaned_data[2, 20:, 1], label='40% noise')
+    plt.plot(meaned_data[3, 20:, 0], meaned_data[3, 20:, 1], label='60% noise')
     plt.axvline(x=40, linestyle='--', color='r', linewidth=1)
     plt.axvline(x=80, linestyle='--', color='r', linewidth=1)
 
-    # plt.plot(meaned_data[0, 60:, 0], meaned_data[0, 60:, 1], label='20% noise')
-    # plt.plot(meaned_data[1, 60:, 0], meaned_data[1, 60:, 1], label='40% noise')
-    # plt.plot(meaned_data[2, 20:, 0], meaned_data[2, 20:, 1], label='60% noise')
+    # plt.plot(meaned_data[0, 60:, 0], meaned_data[0, 60:, 1], label='0% noise')
+    # plt.plot(meaned_data[1, 60:, 0], meaned_data[1, 60:, 1], label='20% noise')
+    # plt.plot(meaned_data[2, 60:, 0], meaned_data[2, 60:, 1], label='40% noise')
+    # # plt.plot(meaned_data[3, 20:, 0], meaned_data[3, 20:, 1], label='60% noise')
     # plt.axvline(x=80, linestyle='--', color='r', linewidth=1)
     # plt.axvline(x=120, linestyle='--', color='r', linewidth=1)
     # plt.axvline(x=160, linestyle='--', color='r', linewidth=1)
