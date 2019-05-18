@@ -27,7 +27,7 @@ class Model:
                  n_label_resets=0, cut_train_set=False, mod_labels_after_last_reset=True, use_loss_weights=False,
                  calc_lid_min_before_init_epoch=True,
                  train_separate_ll=False, separate_ll_class_count=2, separate_ll_count=10, separate_ll_fc_width=16,
-                    separate_ll_lr=None, separate_ll_reg_coef=5e-4):
+                    separate_ll_lr=None, separate_ll_reg_coef=0):
         """
 
         :param dataset_name:         dataset name: mnist/cifar-10/cifar-100
@@ -131,20 +131,19 @@ class Model:
         # BUILD NETWORK
         #
 
-        conv_res = None
         reg_loss_unscaled = 0.0
         if self.dataset_name == 'mnist':
-            conv_res, self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds = build_mnist(
+            self.separate_ll_input, self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds = build_mnist(
                 self.nn_input_pl, self.is_training, self.n_blocks, self.block_width)
         elif self.dataset_name == 'cifar-10':
-            conv_res, self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds, reg_loss_unscaled =\
+            self.separate_ll_input, self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds, reg_loss_unscaled =\
                 build_cifar_10(self.nn_input_pl, self.is_training, self.n_blocks, self.block_width, 10)
 
         elif self.dataset_name == 'cifar-100':
             self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds, reg_loss_unscaled = build_cifar_100(
                             self.nn_input_pl,
                             self.is_training)
-            conv_res = self.lid_layer_op
+            self.separate_ll_input = self.lid_layer_op
             # conv_res, self.pre_lid_layer_op, self.lid_layer_op, self.logits, self.preds, reg_loss_unscaled = \
             #     build_cifar_10(self.nn_input_pl, self.is_training, self.n_blocks, self.block_width, 100)
 
@@ -160,6 +159,9 @@ class Model:
             self.separate_lls_logits = []
             self.separate_lls_is_training = []
             self.separate_lls_reg_sum = []
+
+            self.separate_ll_input_pl = tf.placeholder(tf.float32, [None, self.separate_ll_input.shape[1]],
+                                                       'separate_ll_input_pl')
             for i in range(self.separate_ll_count):
                 is_training = tf.placeholder(dtype=tf.bool, name='is_training')
                 self.separate_lls_is_training.append(is_training)
@@ -171,8 +173,8 @@ class Model:
                             axis=1)),
                     (-1, ))
 
-                separate_ll_input = tf.gather(tf.stop_gradient(conv_res),
-                                              batch_elements_belonging_to_selected_classes_indices)
+                # separate_ll_input = tf.gather(tf.stop_gradient(self.separate_ll_input),
+                #                               batch_elements_belonging_to_selected_classes_indices)
 
                 self.separate_lls_labels.append(tf.one_hot(
                         tf.gather(
@@ -182,7 +184,7 @@ class Model:
                         self.separate_ll_class_count))
 
                 separate_ll_hidden_op, separate_lls_logits, separate_lls_reg_sum = linear_layer(
-                    separate_ll_input, is_training, self.separate_ll_fc_width, self.separate_ll_class_count)
+                    self.separate_ll_input_pl, is_training, self.separate_ll_fc_width, self.separate_ll_class_count)
                 self.separate_lls_logits.append(separate_lls_logits)
                 self.separate_lls_preds.append(tf.nn.softmax(separate_lls_logits))
                 self.separate_lls_lid_calc_op.append(get_lid_calc_op(separate_ll_hidden_op))
@@ -701,9 +703,28 @@ class Model:
                 #
 
                 if self.train_separate_ll:
-                    print('\nStarted training separate linear_layers...')
-                    self.train_separate_lls(X_augmented, Y_current, Y_current_ind_per_class, i_epoch_rel,
-                                            current_loss_weights)
+                    print('\nPrecomputing separate linear layer inputs...')
+
+                    separate_ll_inputs_current = np.empty((X_current.shape[0], self.separate_ll_input.shape[1]), np.float32)
+                    for batch in batch_iterator_with_indices(X_current, Y_current, BATCH_SIZE):
+                        feed_dict = {self.nn_input_pl: batch[0], self.is_training: False}
+                        separate_ll_inputs_current[batch[2]] = self.separate_ll_input.eval(feed_dict=feed_dict)
+
+                    separate_ll_inputs_augmented = np.empty((X_augmented.shape[0], self.separate_ll_input.shape[1]),
+                                                            np.float32)
+                    for batch in batch_iterator_with_indices(X_augmented, Y_current, BATCH_SIZE):
+                        feed_dict = {self.nn_input_pl: batch[0], self.is_training: False}
+                        separate_ll_inputs_augmented[batch[2]] = self.separate_ll_input.eval(feed_dict=feed_dict)
+
+                    separate_ll_inputs_validation = np.empty((X_validation.shape[0], self.separate_ll_input.shape[1]),
+                                                             np.float32)
+                    for batch in batch_iterator_with_indices(X_validation, Y_validation, BATCH_SIZE):
+                        feed_dict = {self.nn_input_pl: batch[0], self.is_training: False}
+                        separate_ll_inputs_validation[batch[2]] = self.separate_ll_input.eval(feed_dict=feed_dict)
+
+                    print('\nTraining separate linear layers...')
+                    self.train_separate_lls(separate_ll_inputs_current, Y_current, Y_current_ind_per_class,
+                                            i_epoch_rel, current_loss_weights)
 
                 #
                 # LOG THINGS
@@ -813,13 +834,14 @@ class Model:
                     print()
 
                     separate_ll_train_accuracy_calculator = self.calc_separate_ll_metric_on_dataset(
-                        X_current, Y_current, Y_current_ind_per_class, self.separate_lls_accuracy, False)
+                        separate_ll_inputs_current, Y_current, Y_current_ind_per_class, self.separate_lls_accuracy, False)
                     separate_ll_train_accuracy = separate_ll_train_accuracy_calculator.mean
                     print('Separate linear layer train accuracy:', separate_ll_train_accuracy)
                     summary_feed_dict[separate_ll_train_accuracy_summary_pl] = separate_ll_train_accuracy
 
                     separate_ll_validation_accuracy_calculator = self.calc_separate_ll_metric_on_dataset(
-                        X_validation, Y_validation, Y_validation_ind_per_class, self.separate_lls_accuracy, False)
+                        separate_ll_inputs_validation, Y_validation, Y_validation_ind_per_class,
+                        self.separate_lls_accuracy, False)
                     separate_ll_validation_accuracy = separate_ll_validation_accuracy_calculator.mean
                     print('Separate linear layer validation accuracy:', separate_ll_validation_accuracy)
                     summary_feed_dict[separate_ll_validation_accuracy_summary_pl] = separate_ll_validation_accuracy
@@ -894,8 +916,9 @@ class Model:
                     print('\nLID score after %dth epoch: %g' % (i_epoch_tot, new_lid_score,))
 
                     if self.train_separate_ll:
+                        print('\nComputing LIDs for separate linear layers...')
                         separate_lls_combined_lid_calculator, separate_lls_lid_calculators = \
-                            self.calc_separate_lls_lid(X_current, Y_current, Y_current_ind_per_class)
+                            self.calc_separate_lls_lid(separate_ll_inputs_current, Y_current, Y_current_ind_per_class)
 
                     if self.to_log(4):
                         folder_to_save = os.path.join('logs/LID/per_class', self.dataset_name, self.model_name)
@@ -954,7 +977,7 @@ class Model:
                     print('reached the end, resetting current labels')
 
                     Y_current_new = np.empty((self.current_dataset_size, self.n_classes), np.float32)
-                    for batch in batch_iterator_with_indices(X_augmented, Y_current, BATCH_SIZE, False):
+                    for batch in batch_iterator_with_indices(X_current, Y_current, BATCH_SIZE, False):
                         feed_dict = {self.nn_input_pl: batch[0], self.is_training: False}
                         if self.update_mode == 2:
                             feed_dict[self.block_class_feature_means_pl] = self.block_class_feature_means
@@ -1212,7 +1235,7 @@ class Model:
 
         return lid_calculator
 
-    def calc_separate_lls_lid(self, X, Y, Y_ind_per_class):
+    def calc_separate_lls_lid(self, separate_ll_inputs, Y, Y_ind_per_class):
         combined_lid_calculator = DatasetMetricCalculator(class_count=self.n_classes)
         lid_calculators = []
 
@@ -1223,14 +1246,16 @@ class Model:
                 ll_class_indices.extend(Y_ind_per_class[c])
 
             i_batch = -1
-            for batch in batch_iterator(X[ll_class_indices], Y[ll_class_indices], LID_BATCH_SIZE, True):
+            for batch in batch_iterator(separate_ll_inputs[ll_class_indices], Y[ll_class_indices], LID_BATCH_SIZE, True):
                 i_batch += 1
 
                 if i_batch == LID_BATCH_CNT or batch[0].shape[0] < LID_K + 1:
                     break
 
-                feed_dict = {self.nn_input_pl: batch[0], self.labels_pl: batch[1],
-                             self.separate_lls_is_training[i]: False, self.is_training: False}
+                feed_dict = {self.separate_ll_input_pl: batch[0],
+                             self.labels_pl: batch[1],
+                             self.separate_lls_is_training[i]: False,
+                             self.is_training: False}
 
                 batch_lid_scores = self.separate_lls_lid_calc_op[i].eval(feed_dict)
 
@@ -1398,7 +1423,7 @@ class Model:
 
         return metric_calculators
 
-    def calc_separate_ll_metric_on_dataset(self, X, Y, Y_ind_per_class, metric_ops, keep_values=True,
+    def calc_separate_ll_metric_on_dataset(self, separate_ll_inputs, Y, Y_ind_per_class, metric_ops, keep_values=True,
                                            base_feed_dict=None):
         feed_dict = {}
         if base_feed_dict is not None:
@@ -1412,8 +1437,8 @@ class Model:
             for c in self.separate_lls_classes[i]:
                 ll_class_indices.extend(Y_ind_per_class[c])
 
-            for batch in batch_iterator(X[ll_class_indices], Y[ll_class_indices], BATCH_SIZE, False):
-                feed_dict[self.nn_input_pl] = batch[0]
+            for batch in batch_iterator(separate_ll_inputs[ll_class_indices], Y[ll_class_indices], BATCH_SIZE, False):
+                feed_dict[self.separate_ll_input_pl] = batch[0]
                 feed_dict[self.labels_pl] = batch[1]
                 feed_dict[self.separate_lls_is_training[i]] = False
                 feed_dict[self.is_training] = False
@@ -1423,19 +1448,18 @@ class Model:
 
         return metric_calculator
 
-    def train_separate_lls(self, X, Y, Y_ind_per_class, i_epoch_rel, current_loss_weights):
+    def train_separate_lls(self, separate_ll_inputs, Y, Y_ind_per_class, i_epoch_rel, current_loss_weights):
         for i in range(self.separate_ll_count):
             ll_class_indices = []
             for c in self.separate_lls_classes[i]:
                 ll_class_indices.extend(Y_ind_per_class[c])
 
-            for batch in batch_iterator_with_indices(X[ll_class_indices], Y[ll_class_indices], BATCH_SIZE, True):
-                feed_dict = {}
-                feed_dict[self.nn_input_pl] = batch[0]
-                feed_dict[self.labels_pl] = batch[1]
-                feed_dict[self.separate_lls_is_training[i]] = True
-                feed_dict[self.is_training] = False
-                feed_dict[self.rel_epoch_pl] = i_epoch_rel
-                feed_dict[self.loss_weights_pl] = current_loss_weights[batch[2]]
-
+            for batch in batch_iterator_with_indices(separate_ll_inputs[ll_class_indices], Y[ll_class_indices],
+                                                     BATCH_SIZE, True):
+                feed_dict = {self.separate_ll_input_pl: batch[0],
+                             self.labels_pl: batch[1],
+                             self.separate_lls_is_training[i]: True,
+                             self.is_training: False,
+                             self.rel_epoch_pl: i_epoch_rel,
+                             self.loss_weights_pl: current_loss_weights[batch[2]]}
                 self.separate_lls_train_step[i].run(feed_dict)
