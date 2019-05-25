@@ -425,31 +425,32 @@ class Model:
 
         per_epoch_summaries = []
 
-        clean_train_accuracies_summary_pl = tf.placeholder(tf.float32, (None,))
-        per_epoch_summaries.append(tf.summary.scalar(name='clean_train_accuracy',
-                                                     tensor=tf.reduce_mean(clean_train_accuracies_summary_pl)))
-        per_epoch_summaries.append(tf.summary.histogram(name='clean_train_accuracy',
-                                                        values=clean_train_accuracies_summary_pl))
+        if self.to_log(6):
+            clean_train_accuracies_summary_pl = tf.placeholder(tf.float32, (None,))
+            per_epoch_summaries.append(tf.summary.scalar(name='clean_train_accuracy',
+                                                         tensor=tf.reduce_mean(clean_train_accuracies_summary_pl)))
+            per_epoch_summaries.append(tf.summary.histogram(name='clean_train_accuracy',
+                                                            values=clean_train_accuracies_summary_pl))
 
-        train_accuracies_on_clean_summary_pl = tf.placeholder(tf.float32, (None,))
-        per_epoch_summaries.append(tf.summary.scalar(name='train_accuracy_on_clean',
-                                                     tensor=tf.reduce_mean(train_accuracies_on_clean_summary_pl)))
-        per_epoch_summaries.append(tf.summary.histogram(name='train_accuracy_on_clean',
-                                                        values=train_accuracies_on_clean_summary_pl))
+            train_accuracies_on_clean_summary_pl = tf.placeholder(tf.float32, (None,))
+            per_epoch_summaries.append(tf.summary.scalar(name='train_accuracy_on_clean',
+                                                         tensor=tf.reduce_mean(train_accuracies_on_clean_summary_pl)))
+            per_epoch_summaries.append(tf.summary.histogram(name='train_accuracy_on_clean',
+                                                            values=train_accuracies_on_clean_summary_pl))
 
-        clean_train_accuracies_on_noised_summary_pl = tf.placeholder(tf.float32, (None,))
-        per_epoch_summaries.append(tf.summary.scalar(
-            name='clean_train_accuracy_on_noised',
-            tensor=tf.reduce_mean(clean_train_accuracies_on_noised_summary_pl)))
-        per_epoch_summaries.append(tf.summary.histogram(name='clean_train_accuracy_on_noised',
-                                                        values=clean_train_accuracies_on_noised_summary_pl))
+            clean_train_accuracies_on_noised_summary_pl = tf.placeholder(tf.float32, (None,))
+            per_epoch_summaries.append(tf.summary.scalar(
+                name='clean_train_accuracy_on_noised',
+                tensor=tf.reduce_mean(clean_train_accuracies_on_noised_summary_pl)))
+            per_epoch_summaries.append(tf.summary.histogram(name='clean_train_accuracy_on_noised',
+                                                            values=clean_train_accuracies_on_noised_summary_pl))
 
-        noised_train_accuracies_on_noised_summary_pl = tf.placeholder(tf.float32, (None,))
-        per_epoch_summaries.append(tf.summary.scalar(
-            name='noised_train_accuracy_on_noised',
-            tensor=tf.reduce_mean(noised_train_accuracies_on_noised_summary_pl)))
-        per_epoch_summaries.append(tf.summary.histogram(name='noised_train_accuracy_on_noised',
-                                                        values=noised_train_accuracies_on_noised_summary_pl))
+            noised_train_accuracies_on_noised_summary_pl = tf.placeholder(tf.float32, (None,))
+            per_epoch_summaries.append(tf.summary.scalar(
+                name='noised_train_accuracy_on_noised',
+                tensor=tf.reduce_mean(noised_train_accuracies_on_noised_summary_pl)))
+            per_epoch_summaries.append(tf.summary.histogram(name='noised_train_accuracy_on_noised',
+                                                            values=noised_train_accuracies_on_noised_summary_pl))
 
         test_accuracies_summary_pl = tf.placeholder(tf.float32, (None,))
         per_epoch_summaries.append(tf.summary.scalar(name='test_accuracy',
@@ -478,7 +479,7 @@ class Model:
         new_labels_accuracy_with_noise_summary_scalar = None
         new_labels_accuracy_on_clean_only_summary_scalar = None
         new_labels_accuracy_on_noised_only_summary_scalar = None
-        if self.update_mode == 1 or self.update_mode == 2 or self.update_mode == 3 or self.update_mode == 4:
+        if self.to_log(6):
             modified_labels_accuracy_summary_scalar = tf.placeholder(tf.float32)
             per_epoch_summaries.append(tf.summary.scalar(name='modified_labels_accuracy',
                                                          tensor=modified_labels_accuracy_summary_scalar))

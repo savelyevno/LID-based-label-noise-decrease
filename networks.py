@@ -110,6 +110,9 @@ def build_mnist(x, is_training, n_blocks, block_width):
             b_norm_fc1 = tf.identity(batch_norm(a_fc1, is_training), name='pre_lid_input')
             h_fc1 = tf.nn.relu(b_norm_fc1, name='lid_input')
 
+            keep_prob = tf.cond(is_training, lambda: 0.5, lambda: 1)
+            h_fc1 = tf.nn.dropout(h_fc1, keep_prob)
+
         # Map the 1024 lid_features to 10 classes, one for each digit
         with tf.name_scope('fc2'):
             W_fc2 = weight_variable([block_width, N_CLASSES])
@@ -119,7 +122,7 @@ def build_mnist(x, is_training, n_blocks, block_width):
 
             preds = tf.nn.softmax(y_conv, -1)
 
-        return h_pool2_flat, b_norm_fc1, h_fc1, y_conv, preds
+        return h_pool2_flat, b_norm_fc1, h_fc1, y_conv, preds, keep_prob
 
     else:
         # Fully connected layer 1 -- after 2 round of downsampling, our 28x28 image
