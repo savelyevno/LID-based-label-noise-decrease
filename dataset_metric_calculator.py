@@ -1,11 +1,13 @@
 import numpy as np
+import sklearn.metrics
 
 
 # noinspection PyAttributeOutsideInit
 class DatasetMetricCalculator:
-    def __init__(self, keep_values=False, class_count=None):
+    def __init__(self, keep_values=False, class_count=None, compute_confusion_matrix=False):
         self.class_count = class_count
         self.keep_values = keep_values
+        self.compute_confusion_matrix = compute_confusion_matrix
         self.clear()
 
     @property
@@ -63,6 +65,10 @@ class DatasetMetricCalculator:
             for lbl, val in zip(labels_raveled, values_raveled):
                 self._values_per_class[lbl].append(val)
 
+        if self.compute_confusion_matrix:
+            self.confusion_matrix += sklearn.metrics.confusion_matrix(labels_raveled, values_raveled.astype(int),
+                                                                      np.arange(self.class_count))
+
         self.add_batch_values(values_raveled)
 
     def clear(self):
@@ -71,6 +77,9 @@ class DatasetMetricCalculator:
 
         self.sum_per_class = np.zeros(self.class_count)
         self.element_count_per_class = np.zeros(self.class_count)
+
+        if self.class_count is not None and self.compute_confusion_matrix:
+            self.confusion_matrix = np.zeros((self.class_count, self.class_count), np.int64)
 
         self._values_per_class = [[] for _ in range(self.class_count)]
         self._values = []

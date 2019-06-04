@@ -11,7 +11,7 @@ from keras.utils import np_utils
 from original_paper.util import other_class
 
 from preprocessing import read_dataset
-from noise_dataset import introduce_symmetric_noise
+from noise_dataset import introduce_uniform_noise
 
 # Set random seed
 np.random.seed(123)
@@ -147,7 +147,7 @@ def get_data(dataset, noise_ratio=0, random_shuffle=False, noise_seed=0):
         noise_ratio /= 100
 
     X_train, Y_train = read_dataset(dataset, 'train_without_val')
-    introduce_symmetric_noise(Y_train, noise_ratio, noise_seed)
+    introduce_uniform_noise(Y_train, noise_ratio, noise_seed)
 
     if random_shuffle:
         # random shuffle
