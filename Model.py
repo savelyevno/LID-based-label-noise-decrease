@@ -725,6 +725,8 @@ class Model:
                 #
 
                 summary = tf.Summary()
+                self.add_simple_value_summary(summary, 'train_set_size', len(X_current))
+                self.add_simple_value_summary(summary, 'clean_train_set_size', len(self.clean_indices))
                 print()
 
                 #
