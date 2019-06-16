@@ -1143,6 +1143,7 @@ class Model:
 
                     i_epoch_rel = 0
                     turning_rel_epoch = -1
+                    weight_matrix = np.ones((self.n_classes, self.n_classes), np.float32)
                     turning_rel_epoch_matrix = -np.ones((self.n_classes, self.n_classes), np.int32)
                     lid_per_epoch = []
                     separate_ll_lid_per_epoch = []

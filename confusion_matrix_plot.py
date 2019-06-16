@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from noise_dataset import get_pair_confusion_noise_matrix
 
 
 def get_confusion_matrix_image(cm, class_count, normalize):
@@ -13,6 +14,7 @@ def get_confusion_matrix_image(cm, class_count, normalize):
     plot_numbers = class_count <= 10
 
     fig, ax = plt.subplots(dpi=100 if plot_numbers else 150)
+    # fig, ax = plt.subplots()
     canvas = FigureCanvas(fig)
     im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
     ax.figure.colorbar(im, ax=ax)
@@ -58,13 +60,14 @@ def get_confusion_matrix_image(cm, class_count, normalize):
 
 
 if __name__ == '__main__':
-    class_count = 100
-    cm = np.random.randint(0, 1000, (class_count, class_count))
+    class_count = 10
+    # cm = np.random.randint(0, 1000, (class_count, class_count))
+    cm = get_pair_confusion_noise_matrix(class_count, 0.25)
     image = get_confusion_matrix_image(cm, class_count, True)
     print(image.shape)
-    # plt.figure().set_size_inches((7.1, 6))
-    plt.tight_layout()
+    # plt.tight_layout()
+    plt.figure().set_size_inches((7.5, 5.5))
     plt.imshow(image)
-    plt.show()
-
+    # plt.show()
+    plt.savefig('../../../pair25.png')
 
