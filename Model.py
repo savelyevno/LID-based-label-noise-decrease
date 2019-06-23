@@ -48,6 +48,7 @@ class Model:
                                     5th bit: logs LID class wise (choosing reference points from the same class)
                                     6th bit: logs additional accuracies/label similarities
                                     7th bit: logs accuracy confusion matrix
+                                    8th bit: feature transition experiment
         """
 
         self.dataset_name = dataset_name
@@ -164,6 +165,7 @@ class Model:
         self.separate_lls_logits = None
         self.separate_lls_is_training = None
         self.separate_lls_reg_sum = None
+        self.separate_ll_hidden_ops = None
         if self.train_separate_ll:
             self.separate_lls_labels = []
             self.separate_lls_preds = []
@@ -171,36 +173,39 @@ class Model:
             self.separate_lls_logits = []
             self.separate_lls_is_training = []
             self.separate_lls_reg_sum = []
+            self.separate_ll_hidden_ops = []
 
             self.separate_ll_input_pl = tf.placeholder(tf.float32, [None, self.separate_ll_input.shape[1]],
                                                        'separate_ll_input_pl')
             for i in range(self.separate_ll_count):
-                is_training = tf.placeholder(dtype=tf.bool, name='is_training')
-                self.separate_lls_is_training.append(is_training)
-                batch_elements_belonging_to_selected_classes_indices = tf.reshape(
-                    tf.where(
-                        tf.reduce_any(
-                            input_tensor=tf.equal(x=tf.expand_dims(self.labels_argmaxed, 1),
-                                                  y=self.separate_lls_classes[i]),
-                            axis=1)),
-                    (-1, ))
+                with tf.name_scope('-'.join([str(it) for it in self.separate_lls_classes[i]])):
+                    is_training = tf.placeholder(dtype=tf.bool, name='is_training')
+                    self.separate_lls_is_training.append(is_training)
+                    batch_elements_belonging_to_selected_classes_indices = tf.reshape(
+                        tf.where(
+                            tf.reduce_any(
+                                input_tensor=tf.equal(x=tf.expand_dims(self.labels_argmaxed, 1),
+                                                      y=self.separate_lls_classes[i]),
+                                axis=1)),
+                        (-1, ))
 
-                # separate_ll_input = tf.gather(tf.stop_gradient(self.separate_ll_input),
-                #                               batch_elements_belonging_to_selected_classes_indices)
+                    # separate_ll_input = tf.gather(tf.stop_gradient(self.separate_ll_input),
+                    #                               batch_elements_belonging_to_selected_classes_indices)
 
-                self.separate_lls_labels.append(tf.one_hot(
-                        tf.gather(
-                            tf.gather(self.separate_ll_classes_inv_map[i],
-                                      self.labels_argmaxed),
-                            batch_elements_belonging_to_selected_classes_indices),
-                        self.separate_ll_class_count))
+                    self.separate_lls_labels.append(tf.one_hot(
+                            tf.gather(
+                                tf.gather(self.separate_ll_classes_inv_map[i],
+                                          self.labels_argmaxed),
+                                batch_elements_belonging_to_selected_classes_indices),
+                            self.separate_ll_class_count))
 
-                separate_ll_hidden_op, separate_lls_logits, separate_lls_reg_sum = linear_layer(
-                    self.separate_ll_input_pl, is_training, self.separate_ll_fc_width, self.separate_ll_class_count)
-                self.separate_lls_logits.append(separate_lls_logits)
-                self.separate_lls_preds.append(tf.nn.softmax(separate_lls_logits))
-                self.separate_lls_lid_calc_op.append(get_lid_calc_op(separate_ll_hidden_op))
-                self.separate_lls_reg_sum.append(separate_lls_reg_sum)
+                    separate_ll_hidden_op, separate_lls_logits, separate_lls_reg_sum = linear_layer(
+                        self.separate_ll_input_pl, is_training, self.separate_ll_fc_width, self.separate_ll_class_count)
+                    self.separate_lls_logits.append(separate_lls_logits)
+                    self.separate_lls_preds.append(tf.nn.softmax(separate_lls_logits))
+                    self.separate_lls_lid_calc_op.append(get_lid_calc_op(separate_ll_hidden_op))
+                    self.separate_lls_reg_sum.append(separate_lls_reg_sum)
+                    self.separate_ll_hidden_ops.append(separate_ll_hidden_op)
 
         #
         # PREPARE FOR LABEL CHANGING
@@ -410,6 +415,10 @@ class Model:
         else:
             introduce_noise(Y, noise_matrix, noise_seed)
 
+        if self.to_log(8):
+            np.save('logs/ftr_mov/Y.npy', Y)
+            np.save('logs/ftr_mov/Y_clean.npy', Y0)
+
         Y_ind = np.argmax(Y, 1)
         Y0_cls_ind = np.argmax(Y0, 1)
         self.is_sample_clean = (Y_ind == Y0_cls_ind).astype(int)
@@ -576,6 +585,41 @@ class Model:
                     # TODO: would unaugmented data change LDA algo performance?
                     self.compute_LDA(X_augmented, Y_current, Y_current_cls_ind, Y_current_ind_per_class)
 
+                if self.to_log(8):
+                    separate_ll_inputs_current = np.empty((X_current.shape[0], self.separate_ll_input.shape[1]),
+                                                          np.float32)
+                    for batch in batch_iterator_with_indices(X_current, Y_current, BATCH_SIZE):
+                        feed_dict = {self.nn_input_pl: batch[0], self.is_training: False}
+                        separate_ll_inputs_current[batch[2]] = self.separate_ll_input.eval(feed_dict=feed_dict)
+
+                    for i in range(self.separate_ll_count):
+                        # select only 0-1 class pair
+                        if not(self.separate_lls_classes[i][0] == 0 and self.separate_lls_classes[i][1] == 1):
+                            continue
+
+                        ll_class_indices = []
+                        ll_class_indices_inv = []
+                        for c in self.separate_lls_classes[i]:
+                            ll_class_indices.extend(Y_current_ind_per_class[c])
+                            ll_class_indices_inv.extend([c] * len(Y_current_ind_per_class[c]))
+
+                        if i_epoch_rel == 1:
+                            np.save('logs/ftr_mov/Y_cls_pair.npy', np.array(ll_class_indices_inv))
+
+                        features = np.empty((len(ll_class_indices), self.separate_ll_hidden_ops[i].shape[-1]))
+                        for batch in batch_iterator_with_indices(separate_ll_inputs_current[ll_class_indices],
+                                                                 Y[ll_class_indices],
+                                                                 BATCH_SIZE, False):
+                            feed_dict = {self.separate_ll_input_pl: batch[0],
+                                         self.labels_pl: batch[1],
+                                         self.separate_lls_is_training[i]: False,
+                                         self.is_training: False,
+                                         self.loss_weights_pl: current_loss_weights[batch[2]]}
+                            features[batch[2]] = self.separate_ll_hidden_ops[i].eval(feed_dict=feed_dict,
+                                                                                     session=self.sess)
+
+                        np.save('logs/ftr_mov/X_{}.npy'.format(i_epoch_rel - 1), features)
+
                 #
                 # TRAIN
                 #
@@ -687,7 +731,6 @@ class Model:
                         0)
                     np.save(file='logs/logits/' + self.dataset_name + '/' + self.model_name,
                             arr=logits_per_epoch_per_element)
-
                 #
                 # CALCULATE LID
                 #

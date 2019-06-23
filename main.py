@@ -19,10 +19,10 @@ if __name__ == '__main__':
     # noise_matrix[0, 9] = 0.25
     # noise_matrix[9, 9] = 0.75
     # noise_matrix[9, 0] = 0.25
-    noise_matrix = get_pair_confusion_noise_matrix(class_count, 0.35)
-    # noise_matrix = None
+    # noise_matrix = get_pair_confusion_noise_matrix(class_count, 0.35)
+    noise_matrix = None
 
-    model_name = 'pair-35_pairwise_ep50_init0_rst1-cut-none_sep-LL-2-45-64'
+    model_name = '0_none_ep50_init0_sep-LL-2-45-64'
     print(dataset_name, model_name)
     model = Model(dataset_name=dataset_name, model_name=model_name,
                   # reg_coef=1e-6, lr_segments=[(80, 1e-2), (5, 1e-3), (40, 1e-4), (40, 1e-5)],      # cifar-100 165
@@ -33,11 +33,11 @@ if __name__ == '__main__':
                   # reg_coef=1e-4, lr_segments=[(40, 1e-2), (1, 1e-3), (39, 1e-4)],      # cifar-10 improved
                   # reg_coef=1e-6, lr_segments=[(80, 1e-2), (40, 1e-3), (40, 1e-4), (40, 1e-5)],  # cifar-100 paper
                   # lid_use_pre_relu=False, lda_use_pre_relu=True,
-                  update_mode=5,
+                  update_mode=0,
                   # calc_lid_min_before_init_epoch=True,
                   # start_after_init_epoch=True,
                   init_epochs=0,
-                  n_label_resets=1, cut_train_set=True, mod_labels_after_last_reset=False, use_loss_weights=False,
+                  n_label_resets=0, cut_train_set=True, mod_labels_after_last_reset=False, use_loss_weights=False,
                   train_separate_ll=True, separate_ll_class_count=2, separate_ll_count=45, separate_ll_fc_width=64,
                   log_mask=1 * (1 << 0) +
                            0 * (1 << 1) +
@@ -46,7 +46,8 @@ if __name__ == '__main__':
                            0 * (1 << 4) +
                            0 * (1 << 5) +
                            0 * (1 << 6) +
-                           1 * (1 << 7))
+                           1 * (1 << 7) +
+                           1 * (1 << 8))
     model.train(noise_ratio=0, noise_seed=0, noise_matrix=noise_matrix)
 
     # model_name = 'clean_none_lr_times_1e-3_4_block16'

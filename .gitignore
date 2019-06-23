@@ -23,5 +23,7 @@ logs/LID/per_class/*/*
 logs/LID/class_wise/*/*
 !logs/LID/class_wise/*/.empty
 
+logs/ftr_mov
+
 *.csv
 checkpoints*
